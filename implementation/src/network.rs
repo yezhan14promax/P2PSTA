@@ -10,7 +10,12 @@ pub struct Network {
 impl Network {
     pub fn new(num_nodes: usize, m: usize) -> Self {
         let mut rng = rand::rng();
-        let max_id = 1u64 << m;
+        let max_id = if m >= 64 {
+            u64::MAX
+        } else {
+            1u64 << m
+        };
+
 
         // 随机生成节点
         let mut ids: Vec<u64> = (0..num_nodes)
@@ -36,7 +41,8 @@ impl Network {
             let mut finger = Vec::new();
 
             for k in 0..self.m {
-                let start = (id + (1 << k)) % self.max_id;
+                let offset = if k >= 63 { u64::MAX } else { 1u64 << k };
+                let start = id.wrapping_add(offset) % self.max_id;
                 let succ = self.find_successor_id(start);
                 let idx = self.nodes.iter().position(|n| n.node_id == succ).unwrap();
                 finger.push(idx);
