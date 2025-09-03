@@ -10,12 +10,12 @@ pub struct Segment {
 
 #[derive(Debug)]
 pub struct Node {
-    pub node_id: u64,                    // 节点 ID
-    pub m: usize,                        // ID 空间大小 (2^m)
-    pub finger: Vec<usize>,              // finger table 存节点索引 (不是 node_id，方便在 Network 中跳转)
-    pub predecessor: Option<usize>,      // 前驱节点索引
-    pub successor: Option<usize>,        // 后继节点索引
-    pub storage: HashMap<u64, Vec<Segment>>, // 存储 key -> 数据段
+    pub node_id: u64,                    // 节点 ID / Node ID
+    pub m: usize,                        // ID 空间大小 (2^m) / ID space size (2^m)
+    pub finger: Vec<usize>,              // finger table 存节点索引 (不是 node_id，方便在 Network 中跳转) / finger table stores node indices (not node_id, for easier navigation in Network)
+    pub predecessor: Option<usize>,      // 前驱节点索引 / Predecessor node index
+    pub successor: Option<usize>,        // 后继节点索引 / Successor node index
+    pub storage: HashMap<u64, Vec<Segment>>, // 存储 key -> 数据段 / Storage: key -> data segments
 }
 
 impl Node {
