@@ -7,6 +7,7 @@ pub fn run_experiment(net: &mut Network, entry_node: usize, num_inserts: usize, 
 
     // 插入阶段：加载 Geolife 数据集
     // Insertion phase: Load Geolife dataset
+    println!("Loading Geolife dataset...");
     let dataset = dataset::load_geolife_dataset(
         "geolife/Geolife Trajectories 1.3/Data"
     );
@@ -73,6 +74,7 @@ pub fn run_experiment(net: &mut Network, entry_node: usize, num_inserts: usize, 
 
     // 查询阶段
     // Query phase
+    println!("--- Query---");
     let query_window = if key_span > 0 { key_span / 100 } else { 1 };
 
     let start = Instant::now();
