@@ -1,15 +1,23 @@
-mod node;
+mod config;
 mod network;
-mod hilbert;
+mod node;
+mod sfc;
 mod experiment;
-mod dataset;
+mod placement;
+mod planner;
+mod query;
+
+use std::env;
 
 fn main() {
-    // 创建一个 x个节点的 Chord 环，id 空间大小为 2^m
-    // Create a Chord ring with x nodes, and an ID space of size 2^m
-    let mut net = network::Network::new(256, 63);
+    // 读取配置路径：优先 CLI 第一个参数，其次环境变量 CONFIG，最后默认 "config.yaml"
+    let cfg_path = env::args().nth(1)
+        .or_else(|| env::var("CONFIG").ok())
+        .unwrap_or_else(|| "config.yaml".to_string());
 
-    // 从节点 0 作为入口，插入 1000000 条，查询 10 次
-    // Use node 0 as the entry point, insert 1,000,000 records, and perform 10 queries
-    experiment::run_experiment(&mut net, 0, 1_000_000, 10);
+    println!("CWD = {}", std::env::current_dir().unwrap().display());
+    println!("Using config: {}", cfg_path);
+
+    let cfg = config::Config::from_yaml(&cfg_path);
+    experiment::run_experiment(&cfg);
 }

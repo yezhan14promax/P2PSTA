@@ -1,107 +1,218 @@
-use crate::{network::Network, node::Segment, hilbert::encode_hilbert, dataset};
-use rand::Rng;
-use std::time::Instant;
+use crate::config::Config;
+use crate::network::Network;
+use crate::node::Segment;
+use crate::planner::{plan_window, PlanResult};
+use crate::query::QueryExecutor;
+use crate::sfc::{build_sfc_params, encode_point, SfcParams};
 
-pub fn run_experiment(net: &mut Network, entry_node: usize, num_inserts: usize, num_queries: usize) {
-    let mut rng = rand::rng();
+use chrono::{Local, Utc};
+use csv::StringRecord;
+use std::fs::{create_dir_all, File};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 
-    // 插入阶段：加载 Geolife 数据集
-    // Insertion phase: Load Geolife dataset
-    println!("Loading Geolife dataset...");
-    let dataset = dataset::load_geolife_dataset(
-        "geolife/Geolife Trajectories 1.3/Data"
-    );
+/// 由 main.rs 调用的实验入口
+pub fn run_experiment(cfg: &Config) {
+    // 1) 输出目录
+    let run_dir = make_run_dir();
+    println!("Output dir = {}", run_dir.display());
 
-    // 只取前 num_inserts 条数据
-    // Only take the first num_inserts records
-    let points: Vec<_> = dataset.into_iter().take(num_inserts).collect();
+    // 2) 构建 SFC 参数
+    let sfc_params = build_sfc_params(cfg);
 
-    // 记录 key 范围
-    // Record the key range
-    let mut min_key = u64::MAX;
-    let mut max_key = u64::MIN;
+    // 3) 构建网络（Chord DHT 基线）
+    let num_nodes = cfg.network.num_nodes.max(1);
+    let tail_bits = cfg.experiment.stop_tail_bits as u8;
+    let mut net = Network::new(num_nodes, sfc_params.ring_m, tail_bits);
 
-    let start = Instant::now();
-    for (i, (lat, lon, time)) in points.into_iter().enumerate() {
-        let key = encode_hilbert(lat, lon, time);
+    // 4) 装载 CSV -> Segment -> DHT
+    let (ingest_count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys) =
+        ingest_csv_into_network(cfg, &sfc_params, &mut net);
+    println!("Inserted {} records in network.", ingest_count);
 
-        // 更新 key 范围
-        // Update key range
-        if key < min_key {
-            min_key = key;
-        }
-        if key > max_key {
-            max_key = key;
-        }
-
-        let seg = Segment {
-            traj_id: i as u64,
-            segment_id: 0,
-            hilbert_key: key,
-            payload: format!("point({}, {}, {})", lat, lon, time),
-        };
-        net.insert(entry_node, seg);
-    }
-
-    // 避免溢出：只有当 max_key > min_key 时才计算跨度
-    // Avoid overflow: Only calculate span when max_key > min_key
-    let key_span = if max_key > min_key { max_key - min_key } else { 0 };
-
-    println!(
-        "Inserted {} records in {:?}, key range [{}, {}], span {}",
-        num_inserts,
-        start.elapsed(),
-        min_key,
-        max_key,
-        key_span
-    );
-
-    // 打印节点分布情况
-    // Print node data distribution
-    println!("--- Node data distribution ---");
-    for (i, node) in net.nodes.iter().enumerate() {
-        let (count, min, max) = node.stats();
-        match (min, max) {
-            (Some(min), Some(max)) => {
-                println!("Node {} (ID={}): {} records, key range [{}, {}]",
-                         i, node.node_id, count, min, max);
-            }
-            _ => {
-                println!("Node {} (ID={}): empty", i, node.node_id);
-            }
-        }
-    }
-
-    // 查询阶段
-    // Query phase
-    println!("--- Query---");
-    let query_window = if key_span > 0 { key_span / 100 } else { 1 };
-
-    let start = Instant::now();
-    let mut total_hits = 0;
-    let mut total_visited = 0;
-
-    for _ in 0..num_queries {
-        // 在真实 key 范围内随机选择查询区间
-        // Randomly select query interval within the real key range
-        let k1 = rng.random_range(min_key..max_key);
-        let k2 = k1.saturating_add(query_window); // 使用 saturating_add 避免溢出 // Use saturating_add to avoid overflow
-        let (results, visited) = net.query_range(entry_node, (k1, k2));
-
-        total_hits += results.len();
-        total_visited += visited;
-
-        println!(
-            "Query range ({} ~ {}), matched {} records, visited {} nodes",
-            k1, k2, results.len(), visited
+    // 5) 节点分布落盘
+    {
+        let rows = net.node_distribution_rows();
+        let mut f = BufWriter::new(
+            File::create(run_dir.join("node_distribution.csv")).expect("create node_distribution.csv"),
         );
+        writeln!(f, "node_idx,node_id,total_count,min_key,max_key").ok();
+        for (idx, id, total, mn, mx) in rows {
+            writeln!(
+                f,
+                "{},{},{},{},{}",
+                idx,
+                id,
+                total,
+                mn.map(|v| v.to_string()).unwrap_or_default(),
+                mx.map(|v| v.to_string()).unwrap_or_default()
+            )
+            .ok();
+        }
     }
 
-    println!(
-        "{} queries in {:?}, avg matched {:.2}, avg visited nodes {:.2}",
-        num_queries,
-        start.elapsed(),
-        total_hits as f64 / num_queries as f64,
-        total_visited as f64 / num_queries as f64
-    );
+    // 6) ingest 概览
+    {
+        let mut f = BufWriter::new(
+            File::create(run_dir.join("ingest_summary.txt")).expect("create ingest_summary.txt"),
+        );
+        writeln!(f, "lat_min = {}", lat_min).ok();
+        writeln!(f, "lat_max = {}", lat_max).ok();
+        writeln!(f, "lon_min = {}", lon_min).ok();
+        writeln!(f, "lon_max = {}", lon_max).ok();
+        writeln!(f, "ts_min  = {}", ts_min).ok();
+        writeln!(f, "ts_max  = {}", ts_max).ok();
+    }
+
+    // 7) Sanity：抽样 5 个键点查
+    sanity_probe(&net, &sample_keys);
+
+    // 8) 执行查询窗口（使用 planner + QueryExecutor）
+    {
+        let executor = QueryExecutor::new(&net, run_dir.clone(), cfg);
+        for (qi, q) in cfg.experiment.queries.iter().enumerate() {
+            let name = q.name.clone().unwrap_or_else(|| format!("window_{:02}", qi));
+            let plan: PlanResult = plan_window(cfg, &sfc_params, q);
+            if let Err(e) = executor.run_one_window(qi, &name, q, &plan) {
+                eprintln!("Query window {} failed: {}", name, e);
+            }
+        }
+    }
+
+    println!("All queries finished. Results at {:?}", run_dir);
+}
+
+/// 生成 run 目录：results/run_YYYYMMDD_HHMMSS
+fn make_run_dir() -> PathBuf {
+    let ts = Local::now().format("run_%Y%m%d_%H%M%S").to_string();
+    let dir = PathBuf::from("results").join(ts);
+    create_dir_all(&dir).expect("create results dir");
+    dir
+}
+
+/// 装载 CSV -> Segment -> DHT
+/// 返回：(count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys)
+fn ingest_csv_into_network(
+    cfg: &Config,
+    sfc: &SfcParams,
+    net: &mut Network,
+) -> (usize, f64, f64, f64, f64, u64, u64, Vec<u64>) {
+    let csv_path = &cfg.data.csv_path;
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(csv_path)
+        .expect("open csv");
+
+    // 列名解析（大小写/同义容错）
+    let headers = rdr.headers().expect("read headers").clone();
+    let idx_user = find_col(&headers, &["user", "uid", "user_id"]).unwrap_or(None);
+    let idx_traj = find_col(&headers, &["traj_id", "trajectory_id", "tid"]).unwrap_or(None);
+    let idx_lat = find_col(&headers, &["lat", "latitude"]).expect("lat column not found").expect("lat");
+    let idx_lon = find_col(&headers, &["lon", "lng", "longitude"]).expect("lon column not found").expect("lon");
+    let idx_dt  = find_col(&headers, &["datetime", "time", "timestamp"]).expect("datetime column not found").expect("datetime");
+
+    let mut count: usize = 0;
+    let max_ingest = cfg.data.max_ingest.unwrap_or(usize::MAX);
+
+    let mut lat_min = f64::INFINITY;
+    let mut lat_max = f64::NEG_INFINITY;
+    let mut lon_min = f64::INFINITY;
+    let mut lon_max = f64::NEG_INFINITY;
+    let mut ts_min: u64 = u64::MAX;
+    let mut ts_max: u64 = 0;
+
+    let mut sample_keys: Vec<u64> = Vec::new();
+    let entry_node: usize = 0;
+
+    for result in rdr.records() {
+        let rec = match result { Ok(r) => r, Err(_) => continue };
+
+        let lat: f64 = match rec.get(idx_lat).and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let lon: f64 = match rec.get(idx_lon).and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let ts: u64  = parse_time(rec.get(idx_dt).unwrap_or(""));
+
+        let key = encode_point(sfc, lat, lon, ts);
+        let traj_id = idx_traj.and_then(|i| rec.get(i)).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let segment_id = count as u32;
+        let payload = if let Some(iu) = idx_user { rec.get(iu).unwrap_or("").to_string() } else { String::new() };
+        let seg = Segment { traj_id, segment_id, hilbert_key: key, lat, lon, ts, payload };
+
+        net.insert(entry_node, seg);
+        count += 1;
+
+        if count % 200_000 == 0 { println!("Inserted {} records...", count); }
+
+        // 范围
+        if lat < lat_min { lat_min = lat; }
+        if lat > lat_max { lat_max = lat; }
+        if lon < lon_min { lon_min = lon; }
+        if lon > lon_max { lon_max = lon; }
+        if ts < ts_min { ts_min = ts; }
+        if ts > ts_max { ts_max = ts; }
+
+        // 采样 sanity 键
+        if count % 100_000 == 0 { sample_keys.push(key); }
+
+        if count >= max_ingest {
+            println!("Reached max_ingest limit: {} rows. Stopping ingest.", max_ingest);
+            break;
+        }
+    }
+
+    if count == 0 {
+        lat_min = 0.0; lat_max = 0.0; lon_min = 0.0; lon_max = 0.0; ts_min = 0; ts_max = 0;
+    }
+    (count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys)
+}
+
+fn find_col(headers: &StringRecord, names: &[&str]) -> Option<Option<usize>> {
+    let lower: Vec<String> = headers.iter().map(|s| s.to_lowercase()).collect();
+    for cand in names {
+        if let Some(i) = lower.iter().position(|h| h == cand) { return Some(Some(i)); }
+    }
+    None
+}
+
+fn parse_time(s: &str) -> u64 {
+    // 1) 纯整数（epoch 秒）
+    if let Ok(v) = s.trim().parse::<i64>() { return v.max(0) as u64; }
+    // 2) RFC3339 / ISO8601（含时区）
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return dt.with_timezone(&Utc).timestamp().max(0) as u64;
+    }
+    // 3) 常见无时区格式（按 UTC 处理）
+    use chrono::NaiveDateTime;
+    const FMTS: [&str; 4] = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M",
+    ];
+    for f in &FMTS {
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, f) {
+            let ts = ndt.and_utc().timestamp();
+            return ts.max(0) as u64;
+        }
+    }
+    // 4) 退化：当前时间（避免 0）
+    Utc::now().timestamp() as u64
+}
+
+fn sanity_probe(net: &Network, sample_keys: &Vec<u64>) {
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
+
+    let mut samples = sample_keys.clone();
+    samples.shuffle(&mut thread_rng());
+    samples.truncate(5);
+    println!("Sanity check with {} sampled keys...", samples.len());
+
+    let total = samples.len(); // ← 先记下来长度，避免后面借用已移动的值
+    let mut ok = 0usize;
+    for &key in samples.iter() { // ← 按引用遍历，避免移动 samples
+        let (hits, hops) = net.query_range(0, (key, key));
+        println!("  probe key {} -> hits={}, hops={}", key, hits.len(), hops);
+        if !hits.is_empty() { ok += 1; }
+    }
+    println!("Sanity result: {}/{} keys retrievable.", ok, total.max(1));
 }
