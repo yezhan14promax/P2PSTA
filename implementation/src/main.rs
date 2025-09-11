@@ -10,7 +10,7 @@ mod query;
 use std::env;
 
 fn main() {
-    // 读取配置路径：优先 CLI 第一个参数，其次环境变量 CONFIG，最后默认 "config.yaml"
+    // Read configuration path: prioritize the first CLI argument, then the CONFIG environment variable, and finally default to "config.yaml"
     let cfg_path = env::args().nth(1)
         .or_else(|| env::var("CONFIG").ok())
         .unwrap_or_else(|| "config.yaml".to_string());

@@ -11,26 +11,26 @@ use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
-/// 由 main.rs 调用的实验入口
+/// Experiment entry point, called by main.rs
 pub fn run_experiment(cfg: &Config) {
-    // 1) 输出目录
+    // 1) Output directory
     let run_dir = make_run_dir();
     println!("Output dir = {}", run_dir.display());
 
-    // 2) 构建 SFC 参数
+    // 2) Build SFC parameters
     let sfc_params = build_sfc_params(cfg);
 
-    // 3) 构建网络（Chord DHT 基线）
+    // 3) Build network (Chord DHT baseline)
     let num_nodes = cfg.network.num_nodes.max(1);
     let tail_bits = cfg.experiment.stop_tail_bits as u8;
     let mut net = Network::new(num_nodes, sfc_params.ring_m, tail_bits);
 
-    // 4) 装载 CSV -> Segment -> DHT
+    // 4) Load CSV -> Segment -> DHT
     let (ingest_count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys) =
         ingest_csv_into_network(cfg, &sfc_params, &mut net);
     println!("Inserted {} records in network.", ingest_count);
 
-    // 5) 节点分布落盘
+    // 5) Dump node distribution to disk
     {
         let rows = net.node_distribution_rows();
         let mut f = BufWriter::new(
@@ -51,7 +51,7 @@ pub fn run_experiment(cfg: &Config) {
         }
     }
 
-    // 6) ingest 概览
+    // 6) Ingestion summary
     {
         let mut f = BufWriter::new(
             File::create(run_dir.join("ingest_summary.txt")).expect("create ingest_summary.txt"),
@@ -64,10 +64,10 @@ pub fn run_experiment(cfg: &Config) {
         writeln!(f, "ts_max  = {}", ts_max).ok();
     }
 
-    // 7) Sanity：抽样 5 个键点查
+    // 7) Sanity check: sample 5 keys for lookup
     sanity_probe(&net, &sample_keys);
 
-    // 8) 执行查询窗口（使用 planner + QueryExecutor）
+    // 8) Execute query window (using planner + QueryExecutor)
     {
         let executor = QueryExecutor::new(&net, run_dir.clone(), cfg);
         for (qi, q) in cfg.experiment.queries.iter().enumerate() {
@@ -82,7 +82,7 @@ pub fn run_experiment(cfg: &Config) {
     println!("All queries finished. Results at {:?}", run_dir);
 }
 
-/// 生成 run 目录：results/run_YYYYMMDD_HHMMSS
+/// Generate run directory: results/run_YYYYMMDD_HHMMSS
 fn make_run_dir() -> PathBuf {
     let ts = Local::now().format("run_%Y%m%d_%H%M%S").to_string();
     let dir = PathBuf::from("results").join(ts);
@@ -90,8 +90,8 @@ fn make_run_dir() -> PathBuf {
     dir
 }
 
-/// 装载 CSV -> Segment -> DHT
-/// 返回：(count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys)
+/// Load CSV -> Segment -> DHT
+/// Returns: (count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys)
 fn ingest_csv_into_network(
     cfg: &Config,
     sfc: &SfcParams,
@@ -103,7 +103,7 @@ fn ingest_csv_into_network(
         .from_path(csv_path)
         .expect("open csv");
 
-    // 列名解析（大小写/同义容错）
+    // Parse column names (case-insensitive and synonym tolerant)
     let headers = rdr.headers().expect("read headers").clone();
     let idx_user = find_col(&headers, &["user", "uid", "user_id"]).unwrap_or(None);
     let idx_traj = find_col(&headers, &["traj_id", "trajectory_id", "tid"]).unwrap_or(None);
@@ -142,7 +142,7 @@ fn ingest_csv_into_network(
 
         if count % 200_000 == 0 { println!("Inserted {} records...", count); }
 
-        // 范围
+        // Update boundaries
         if lat < lat_min { lat_min = lat; }
         if lat > lat_max { lat_max = lat; }
         if lon < lon_min { lon_min = lon; }
@@ -150,7 +150,7 @@ fn ingest_csv_into_network(
         if ts < ts_min { ts_min = ts; }
         if ts > ts_max { ts_max = ts; }
 
-        // 采样 sanity 键
+        // Sample sanity keys
         if count % 100_000 == 0 { sample_keys.push(key); }
 
         if count >= max_ingest {
@@ -174,13 +174,13 @@ fn find_col(headers: &StringRecord, names: &[&str]) -> Option<Option<usize>> {
 }
 
 fn parse_time(s: &str) -> u64 {
-    // 1) 纯整数（epoch 秒）
+    // 1) Pure integer (epoch seconds)
     if let Ok(v) = s.trim().parse::<i64>() { return v.max(0) as u64; }
-    // 2) RFC3339 / ISO8601（含时区）
+    // 2) RFC3339 / ISO8601 (with timezone)
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return dt.with_timezone(&Utc).timestamp().max(0) as u64;
     }
-    // 3) 常见无时区格式（按 UTC 处理）
+    // 3) Common format without timezone (treated as UTC)
     use chrono::NaiveDateTime;
     const FMTS: [&str; 4] = [
         "%Y-%m-%d %H:%M:%S",
@@ -194,7 +194,7 @@ fn parse_time(s: &str) -> u64 {
             return ts.max(0) as u64;
         }
     }
-    // 4) 退化：当前时间（避免 0）
+    // 4) Fallback: current time (avoid 0)
     Utc::now().timestamp() as u64
 }
 
@@ -207,9 +207,9 @@ fn sanity_probe(net: &Network, sample_keys: &Vec<u64>) {
     samples.truncate(5);
     println!("Sanity check with {} sampled keys...", samples.len());
 
-    let total = samples.len(); // ← 先记下来长度，避免后面借用已移动的值
+    let total = samples.len(); // Save length before potential moves
     let mut ok = 0usize;
-    for &key in samples.iter() { // ← 按引用遍历，避免移动 samples
+    for &key in samples.iter() { // Iterate by reference to avoid moving samples
         let (hits, hops) = net.query_range(0, (key, key));
         println!("  probe key {} -> hits={}, hops={}", key, hits.len(), hops);
         if !hits.is_empty() { ok += 1; }

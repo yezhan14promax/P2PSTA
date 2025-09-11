@@ -1,34 +1,33 @@
-// src/placement.rs
-// 放置/路由策略统一抽象：Baseline DHT / VNode / SmartVNode 都实现它。
+// Unified abstraction for placement/routing strategies: implemented by Baseline DHT / VNode / SmartVNode.
 
 use crate::node::Segment;
 
-/// 节点分布统计行：node_idx, node_id, total_count, min_key, max_key
+/// Node distribution row: (node_idx, node_id, total_count, min_key, max_key)
 pub type NodeDistRow = (usize, u64, usize, Option<u64>, Option<u64>);
 
 pub trait Placement {
-    /// 插入：从入口节点出发（实现可利用 finger table / vnode 映射）
+    /// Insert: starting from the entry node (implementations may use a finger table / vnode mapping)
     fn insert(&mut self, entry_node: usize, seg: Segment) -> usize;
 
-    /// 查询区间 [s,e]：返回 (命中列表, hops)
+    /// Query the range [s, e]: returns (hit list, hops)
     fn query_range(&self, entry_node: usize, key_range: (u64, u64)) -> (Vec<&Segment>, usize);
 
-    /// 查询区间 [s,e]（携带命中所在的节点索引）：
-    /// 返回 ( (node_idx, &Segment) 列表, hops, 触达的去重节点列表 )
+    /// Query the range [s, e] (including the node index of each hit):
+    /// Returns (list of (node_idx, &Segment), hops, distinct list of nodes reached)
     fn query_range_with_nodes(
         &self,
         entry_node: usize,
         key_range: (u64, u64),
     ) -> (Vec<(usize, &Segment)>, usize, Vec<usize>);
 
-    /// 节点分布统计（便于落盘）
+    /// Node distribution statistics (for persistence)
     fn node_distribution_rows(&self) -> Vec<NodeDistRow>;
 
-    /// 打印节点分布（可选）
+    /// Print node distribution (optional)
     fn print_node_distribution(&self);
 }
 
-// ========== Baseline：直接用现有 Network 实现 ==========
+// ========== Baseline: Using the existing Network implementation directly ==========
 use crate::network::Network;
 
 impl Placement for Network {

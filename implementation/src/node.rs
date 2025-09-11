@@ -6,9 +6,9 @@ pub struct Segment {
     pub segment_id: u32,
     pub hilbert_key: u64,
     pub payload: String,
-    pub lat: f64,           
-    pub lon: f64,           
-    pub ts:  u64,           
+    pub lat: f64,           // Latitude
+    pub lon: f64,           // Longitude
+    pub ts:  u64,           // Timestamp
 }
 
 impl Segment {
@@ -35,13 +35,13 @@ impl Segment {
 
 #[derive(Debug)]
 pub struct Node {
-    pub node_id: u64,               // 节点 ID（环上位置）
-    pub m: usize,                   // 键位宽
-    pub tail_bits: u8,              // 桶尾位数（stop_tail_bits）
-    pub finger: Vec<usize>,         // finger table（由 Network 填充）
-    pub predecessor: Option<usize>, // 前驱索引（可选）
+    pub node_id: u64,               // Node ID (position on the ring)
+    pub m: usize,                   // Key width
+    pub tail_bits: u8,              // Bucket tail bits (stop_tail_bits)
+    pub finger: Vec<usize>,         // Finger table (populated by Network)
+    pub predecessor: Option<usize>, // Predecessor index (optional)
 
-    // 存储：按“桶起点键”聚合
+    // Storage: aggregated by bucket starting key
     pub storage: BTreeMap<u64, Vec<Segment>>,
 }
 
@@ -68,23 +68,23 @@ impl Node {
         if span == u64::MAX { 0 } else { key & !(span - 1) }
     }
 
-    /// 插入：把段落写到其桶起点键下
+    /// Insert: writes a segment under its bucket starting key
     pub fn insert(&mut self, seg: Segment) {
         let b = self.bucket_start(seg.hilbert_key);
         self.storage.entry(b).or_default().push(seg);
     }
 
-    /// 本地范围查询：[s,e] 与各桶区间 [K, K+span-1] 相交即命中
-    /// 返回 (命中引用, 本地遍历步数=1)
+    /// Local range query: returns segments whose bucket range [K, K+span-1] intersects with [s, e]
+    /// Returns (vector of hit references, local traversal step count = 1)
     pub fn query_range(&self, range: (u64, u64)) -> (Vec<&Segment>, usize) {
         let (s, e) = range;
         let span = self.bucket_span();
         let mut out: Vec<&Segment> = Vec::new();
 
-        // 朴素遍历（BTreeMap 可改进为按 key 上界/下界范围，但这里先保证正确性）
+        // Naive traversal (BTreeMap can be improved using range queries by key, but correctness is prioritized here)
         for (&k, vec_seg) in self.storage.iter() {
             let k_end = if span == u64::MAX { u64::MAX } else { k.saturating_add(span - 1) };
-            // 判断相交：K <= e && k_end >= s
+            // Check for intersection: K <= e && k_end >= s
             if k <= e && k_end >= s {
                 for seg in vec_seg {
                     out.push(seg);
@@ -94,12 +94,12 @@ impl Node {
         (out, 1)
     }
 
-    /// 统计：总条数
+    /// Statistics: total count of segments
     pub fn data_len(&self) -> usize {
         self.storage.values().map(|v| v.len()).sum()
     }
 
-    /// 统计：键范围（桶起点 min/max）
+    /// Statistics: key range (minimum/maximum bucket starting keys)
     pub fn stats_range(&self) -> (usize, Option<u64>, Option<u64>) {
         let total = self.data_len();
         if let (Some((&mn, _)), Some((&mx, _))) = (self.storage.first_key_value(), self.storage.last_key_value()) {

@@ -121,9 +121,9 @@ pub(crate) fn q_u64(v: u64, mn: u64, mx: u64, L: u32) -> u32 {
     (t * n).round() as u32
 }
 
-// ===================== Morton / Hilbert 工具（MSB-first） =====================
+// ===================== Morton / Hilbert 工具=====================
 
-/// 3D Morton 交织（MSB-first）：先取高位，再取低位，保证前缀的高位就是八叉树层级
+/// 3D Morton 交织：先取高位，再取低位，保证前缀的高位就是八叉树层级
 pub(crate) fn morton3_interleave_var(x: u32, y: u32, z: u32, bits: Bits3) -> u64 {
     let Bits3 { lx, ly, lt } = bits;
     let mut out: u64 = 0;
@@ -136,7 +136,7 @@ pub(crate) fn morton3_interleave_var(x: u32, y: u32, z: u32, bits: Bits3) -> u64
     out
 }
 
-/// 3D Morton（MSB-first），仅交织最高的 take 位并左对齐
+/// 3D Morton，仅交织最高的 take 位并左对齐
 pub(crate) fn morton3_interleave_take(x: u32, y: u32, z: u32, bits: Bits3, take: u32) -> u64 {
     let Bits3 { lx, ly, lt } = bits;
     let maxb = lx.max(ly).max(lt);
@@ -153,7 +153,7 @@ pub(crate) fn morton3_interleave_take(x: u32, y: u32, z: u32, bits: Bits3, take:
     out << shift
 }
 
-/// 3D Morton 前缀（MSB-first）：返回“左对齐”的前缀值（低位清零）
+/// 3D Morton 前缀：返回“左对齐”的前缀值（低位清零）
 pub(crate) fn morton3_prefix(x: u32, y: u32, z: u32, bits: Bits3, take: u32) -> u64 {
     let full = morton3_interleave_var(x, y, z, bits);      // MSB-first 全码
     let total = bits.lx + bits.ly + bits.lt;
@@ -162,7 +162,7 @@ pub(crate) fn morton3_prefix(x: u32, y: u32, z: u32, bits: Bits3, take: u32) -> 
     full & !mask_low                                       // 低位清零 = 左对齐前缀
 }
 
-/// 2D Morton（MSB-first）：z2t/h2t 的 2D 交织需要与上面保持一致
+/// 2D Morton：z2t/h2t 的 2D 交织需要与上面保持一致
 pub(crate) fn morton2_interleave_var(x: u32, y: u32, bits: Bits3) -> u64 {
     morton2_interleave_var_lxly(x, y, bits.lx, bits.ly)
 }

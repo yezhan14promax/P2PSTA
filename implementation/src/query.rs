@@ -1,5 +1,5 @@
 // src/query.rs
-// 负责：对给定 ranges 进行分布式查询、统计（去重/avg_hops/node cover）、并落盘
+// Responsibility: Perform distributed query on given ranges, statistics (deduplication/avg_hops/node cover), and write results to disk
 
 use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
@@ -10,7 +10,7 @@ use crate::config::{Config, QueryWindow};
 use crate::placement::Placement;
 use crate::planner::PlanResult;
 
-/// 计算百分位（p ∈ (0,100]），空返回 0.0
+/// Calculate percentile (p ∈ (0,100]). Returns 0.0 if empty.
 fn percentile(mut xs: Vec<usize>, p: f64) -> f64 {
     if xs.is_empty() { return 0.0; }
     xs.sort_unstable();
@@ -19,7 +19,7 @@ fn percentile(mut xs: Vec<usize>, p: f64) -> f64 {
     xs[rank.min(n - 1)] as f64
 }
 
-/// 查询执行器
+/// Query executor
 pub struct QueryExecutor<'a, P: Placement> {
     pub placement: &'a P,
     pub out_dir: PathBuf,
@@ -33,7 +33,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
         Self { placement, out_dir, print_first, cfg }
     }
 
-    /// 执行一个窗口：写 window.txt / ranges_and_hits.csv / query_results*.csv / ranges_node_cover.csv / summary.txt
+    /// Execute a query window: write window.txt / ranges_and_hits.csv / query_results*.csv / ranges_node_cover.csv / summary.txt
     pub fn run_one_window(
         &self,
         qi: usize,
@@ -44,7 +44,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
         let qdir = self.out_dir.join(format!("query_{:02}_{}", qi, name));
         create_dir_all(&qdir)?;
 
-        // ========== window.txt ==========
+        // ========== window.txt ========== 
         {
             let mut wf = File::create(qdir.join("window.txt"))?;
             writeln!(wf, "# Query Window")?;
@@ -69,16 +69,16 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             qi, name, plan.ranges_raw.len(), plan.ranges_merged.len()
         );
 
-        // ========== CSV：每区间统计 ==========
+        // ========== CSV: Statistics for each range ==========
         let mut fh = File::create(qdir.join("ranges_and_hits.csv"))?;
         writeln!(fh, "range_idx,start,end,hits,hops")?;
 
-        // ========== CSV：命中明细（不带节点）==========
+        // ========== CSV: Detail without node information ==========
         let mut rf = File::create(qdir.join("query_results.csv"))?;
-        // 只保留用户请求的五列（使用 ingest 时保存在 Segment.payload 的原始行）
+        // Only retain the five columns requested by the user (saved as the original row in Segment.payload during ingest)
         writeln!(rf, "user,traj_id,lat,lon,datetime")?;
 
-        // ========== CSV：命中明细（带节点，可选）==========
+        // ========== CSV: Detail with node information (optional) ==========
         let save_with_nodes = self.cfg.experiment.metrics.save_with_nodes.unwrap_or(true);
         let mut rfn = if save_with_nodes {
             let mut f = File::create(qdir.join("query_results_with_nodes.csv"))?;
@@ -86,7 +86,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             Some(f)
         } else { None };
 
-        // ========== CSV：每区间 node cover（可选）==========
+        // ========== CSV: Node cover for each range (optional) ==========
         let compute_node_cover = self.cfg.experiment.metrics.compute_node_cover.unwrap_or(true);
         let mut fcover = if compute_node_cover {
             let mut f = File::create(qdir.join("ranges_node_cover.csv"))?;
@@ -94,30 +94,30 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             Some(f)
         } else { None };
 
-        // ========== 统计量 ==========
+        // ========== Statistics ==========
         let mut total_hits_with_overlap = 0usize;
         let mut total_hops = 0usize;
         let mut uniq: HashSet<usize> = HashSet::new();
         let mut cover_counts: Vec<usize> = Vec::with_capacity(plan.ranges_merged.len());
 
-        // ========== 执行查询 ==========
+        // ========== Execute query ==========
         for (idx, (s, e)) in plan.ranges_merged.iter().cloned().enumerate() {
-            // 使用带节点信息的接口
+            // Use the interface with node information
             let (hits_nodes, hops, touched_nodes) =
                 self.placement.query_range_with_nodes(0, (s, e));
             total_hops += hops;
 
-            // 统计命中（含重叠）
+            // Count hits (including overlaps)
             total_hits_with_overlap += hits_nodes.len();
 
-            // 写统计与明细
+            // Write statistics and details
             let mut just_hits: Vec<&crate::node::Segment> = Vec::with_capacity(hits_nodes.len());
             for (node_idx, seg) in &hits_nodes {
-                // 跨区间去重（按对象指针）
+                // Cross-range deduplication (by object pointer)
                 uniq.insert(*seg as *const _ as usize);
                 just_hits.push(*seg);
 
-                // 带节点明细（保持原有格式）
+                // Detail with node information (preserve original format)
                 if let Some(ref mut fwn) = rfn {
                     writeln!(
                         fwn,
@@ -127,7 +127,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
                 }
             }
 
-            // 打印与区间统计
+            // Print and log range statistics
             if idx < self.print_first {
                 println!(
                     "  Range[{:>3}] [{}, {}] -> {} segments ({} hops)",
@@ -136,12 +136,12 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             }
             writeln!(fh, "{},{},{},{},{}", idx, s, e, just_hits.len(), hops)?;
 
-            // 不带节点的明细：写入原始 CSV 行（恰为 user,traj_id,lat,lon,datetime）
+            // Detail without node: write original CSV line (namely user,traj_id,lat,lon,datetime)
             for seg in just_hits {
                 writeln!(rf, "{}", seg.payload)?;
             }
 
-            // node cover
+            // Node cover
             if let Some(ref mut fc) = fcover {
                 writeln!(fc, "{},{}", idx, touched_nodes.len())?;
             }
@@ -155,7 +155,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             );
         }
 
-        // ========== summary.txt（就在这里！）==========
+        // ========== summary.txt (right here!) ==========
         {
             let mut sf = File::create(qdir.join("summary.txt"))?;
             writeln!(sf, "raw_ranges        : {}", plan.ranges_raw.len())?;
@@ -172,7 +172,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             };
             writeln!(sf, "avg_hops          : {:.2}", avg_hops)?;
 
-            // node cover 统计
+            // Node cover statistics
             if let Some(ref _fc) = fcover {
                 let mean = if cover_counts.is_empty() {
                     0.0

@@ -4,7 +4,7 @@ import pickle
 import yaml
 import sys
 
-# 读取配置
+# Read configuration
 config_path = "config.yaml"
 if len(sys.argv) > 1:
     config_path = sys.argv[1]
@@ -37,7 +37,7 @@ for user in os.listdir(root):
 
 data = pd.concat(all_points, ignore_index=True)
 
-# 裁剪北京区域
+# Filter Beijing area
 min_lat, max_lat = cfg["dataset"]["lat_range"]
 min_lon, max_lon = cfg["dataset"]["lon_range"]
 data = data[
@@ -48,7 +48,7 @@ data = data[
 print("lat:", float(data["lat"].min()), float(data["lat"].max()))
 print("lon:", float(data["lon"].min()), float(data["lon"].max()))
 
-# 保存 Pickle 与 CSV
+# Save Pickle and CSV
 with open(pkl_file, "wb") as f:
     pickle.dump(data, f)
 data.to_csv(csv_file, index=False, encoding="utf-8")

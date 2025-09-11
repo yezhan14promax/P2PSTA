@@ -15,7 +15,7 @@ sfc:
 
 data:
   csv_path: "geolife_clean.csv"
-  max_ingest: 20000000 # geolife_clean.csv 有 20,369,284 条记录,null 表示全部 ingest
+  max_ingest: null # geolife_clean.csv 有 20,369,284 条记录,null 表示全部 ingest
 
 output:
   result_dir: "results"
@@ -57,7 +57,7 @@ experiment:
       lat_max: 39.923
       lon_max: 116.411
       t_start: "2008-06-01T03:00:00Z"
-      t_end:   "2008-06-10T03:15:00Z"
+      t_end:   "2010-06-10T03:15:00Z"
     - name: "beijing"
       lat_min: 39.5
       lon_min: 116.0

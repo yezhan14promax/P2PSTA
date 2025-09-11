@@ -2,7 +2,7 @@ use crate::config::{Config, QueryWindow};
 use crate::sfc::{SfcParams, build_sfc_params as sfc_build_params, ranges_for_window, encode_point};
 use std::f64::consts::PI;
 
-/// 结果结构
+/// Result structure
 #[derive(Debug, Clone)]
 pub struct PlanResult {
     pub sfc_params: SfcParams,
@@ -10,7 +10,7 @@ pub struct PlanResult {
     pub ranges_merged: Vec<(u64, u64)>,
 }
 
-/// 字符串/整数时间统一转 UTC 秒
+/// Convert string/integer time to UTC seconds
 fn parse_ts_to_epoch_s(ts_str: &str) -> Option<u64> {
     if let Ok(v) = ts_str.trim().parse::<i64>() { return Some(v.max(0) as u64); }
     if let Ok(dt) = ts_str.parse::<chrono::DateTime<chrono::Utc>>() {
@@ -31,7 +31,7 @@ fn meters_to_deg_lon(m: f64, lat_deg: f64) -> f64 {
     m / (111_320.0 * rad.cos().max(1e-6))
 }
 
-/// 用 gap 合并区间
+/// Merge intervals using the specified gap
 fn merge_ranges_with_gap(mut ranges: Vec<(u64, u64)>, gap: u64) -> Vec<(u64, u64)> {
     if ranges.is_empty() { return ranges; }
     ranges.sort_unstable_by_key(|r| r.0);
@@ -48,7 +48,7 @@ fn merge_ranges_with_gap(mut ranges: Vec<(u64, u64)>, gap: u64) -> Vec<(u64, u64
     out
 }
 
-/// 把“锚点 key 的桶区间”注入，再做一次 gap 合并
+/// Inject bucket intervals for anchor keys and merge again with the gap
 fn inject_anchor_buckets_with_tailbits(
     tail_bits: u8,
     mut merged: Vec<(u64, u64)>,
@@ -65,23 +65,23 @@ fn inject_anchor_buckets_with_tailbits(
     merge_ranges_with_gap(merged, merge_gap_keys)
 }
 
-/// 对外提供的 SFC 参数构造（委托给 sfc.rs）
+/// Provide external SFC parameter construction (delegated to sfc.rs)
 pub fn build_params(cfg: &Config) -> SfcParams {
     sfc_build_params(cfg)
 }
 
-/// 规划窗口：上界取整 + 5 锚点（中心 + 四角）
+/// Plan window: round the upper bound and add 5 anchor points (center + four corners)
 pub fn plan_window(cfg: &Config, p: &SfcParams, q: &QueryWindow) -> PlanResult {
-    // 1) 解析时间并做“右端闭区间”修正
+    // 1) Parse time and adjust for closed right interval
     let t_start = parse_ts_to_epoch_s(&q.t_start)
         .unwrap_or_else(|| panic!("bad t_start: {}", q.t_start));
     let t_end_raw = parse_ts_to_epoch_s(&q.t_end)
         .unwrap_or_else(|| panic!("bad t_end: {}", q.t_end));
-    // t 精度来自 cfg.sfc（与编码口径一致）
+    // Time precision comes from cfg.sfc (consistent with encoding precision)
     let t_prec = cfg.sfc.t_precision_s.max(1);
-    let t_end = t_end_raw.saturating_add((t_prec - 1) as u64); // 右端闭
+    let t_end = t_end_raw.saturating_add((t_prec - 1) as u64); // closed right interval
 
-    // 2) 经纬度上界半格扩展（等效 ceil()-1）
+    // 2) Expand upper bound of latitude and longitude by half a cell (equivalent to ceil()-1)
     let lat_c = (q.lat_min + q.lat_max) * 0.5;
     let half_cell_lat = meters_to_deg_lat(cfg.sfc.y_precision_m.max(1e-6)) * 0.5;
     let half_cell_lon = meters_to_deg_lon(cfg.sfc.x_precision_m.max(1e-6), lat_c) * 0.5;
@@ -91,11 +91,11 @@ pub fn plan_window(cfg: &Config, p: &SfcParams, q: &QueryWindow) -> PlanResult {
     let lat_max = (q.lat_max + half_cell_lat).min(90.0);
     let lon_max = (q.lon_max + half_cell_lon).min(180.0);
 
-    // 3) 原算法生成区间并一次合并
+    // 3) Generate intervals using the original algorithm and merge once
     let ranges_raw = ranges_for_window(p, lat_min, lat_max, lon_min, lon_max, t_start, t_end);
     let mut ranges_merged = merge_ranges_with_gap(ranges_raw.clone(), cfg.experiment.merge_gap_keys as u64);
 
-    // 4) 5 锚点注入（中心 + 四角）
+    // 4) Inject 5 anchor points (center + four corners)
     let t_mid = ((t_start as u128 + t_end as u128) / 2) as u64;
     let anchors = [
         encode_point(p, (lat_min + lat_max) * 0.5, (lon_min + lon_max) * 0.5, t_mid),
@@ -105,13 +105,13 @@ pub fn plan_window(cfg: &Config, p: &SfcParams, q: &QueryWindow) -> PlanResult {
         encode_point(p, lat_max, lon_max, t_end),
     ];
     ranges_merged = inject_anchor_buckets_with_tailbits(
-        cfg.experiment.stop_tail_bits as u8,       // 与节点桶对齐
+        cfg.experiment.stop_tail_bits as u8,       // Align with node bucket bits
         ranges_merged,
         &anchors,
         cfg.experiment.merge_gap_keys as u64,
     );
 
-    // 5) max_ranges 限制（优先 experiment；否则使用 SFC 参数里的上限）
+    // 5) Limit max ranges (experiment takes precedence, otherwise use upper bound from SFC parameters)
     if let Some(maxr) = cfg.experiment.max_ranges.or(p.max_ranges) {
         if ranges_merged.len() > maxr {
             ranges_merged.truncate(maxr);
