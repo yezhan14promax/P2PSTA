@@ -1,75 +1,73 @@
 use crate::node::{Node, Segment};
 
-/// Chord-style DHT (pointer routing + finger table)
-/// - m: ring/key width; nodes are evenly spaced on a ring of size 2^m; fingers[i][k] points to successor(id_i + 2^k)
+/// Chord 风格的 DHT 网络
 #[derive(Debug)]
 pub struct Network {
     pub nodes: Vec<Node>,
-    pub m: usize,
+    pub m: usize,                 // 环位宽
+    pub node_ids: Vec<u64>,       // 升序排列的节点 ID（环上位置）
+    pub fingers: Vec<Vec<usize>>, // fingers[i][k] = 节点 i 在 2^k 跳后的后继节点下标
     pub total_inserts: usize,
-    pub node_ids: Vec<u64>,        // Sorted order on the ring
-    pub fingers: Vec<Vec<usize>>,  // fingers[i][k] = node index
 }
 
 impl Network {
-    /// Create a new network: pass tail_bits to each Node (used for bucket storage/query)
+    /// 构建一个等距分布在环上的网络
     pub fn new(num_nodes: usize, m: usize, tail_bits: u8) -> Self {
         let n = num_nodes.max(1);
-        let mut nodes = Vec::with_capacity(n);
-        let ring: u128 = 1u128 << m.min(63);
+        let ring: u128 = if m >= 64 { u128::MAX } else { 1u128 << m };
         let step: u128 = ring / (n as u128);
-        let mut node_ids: Vec<u64> = Vec::with_capacity(n);
+
+        let mut nodes = Vec::with_capacity(n);
+        let mut node_ids = Vec::with_capacity(n);
         for i in 0..n {
-            let id = (step * (i as u128)) as u64;
+            let id = (step * i as u128) as u64;
             node_ids.push(id);
             nodes.push(Node::new(id, m, tail_bits));
         }
+
         let mut net = Self {
             nodes,
             m,
-            total_inserts: 0,
             node_ids,
             fingers: Vec::new(),
+            total_inserts: 0,
         };
         net.rebuild_fingers();
         net
     }
 
-    /// Rebuild the finger tables
+    /// 重新构建 finger table
     pub fn rebuild_fingers(&mut self) {
         let n = self.nodes.len().max(1);
         self.fingers = vec![Vec::new(); n];
+
         for i in 0..n {
-            let mut table: Vec<usize> = Vec::new();
-            for k in 0..self.m.min(63) {
-                let key = self.nodes[i].node_id.wrapping_add(1u64 << k);
-                let succ = self.successor_index(key);
-                table.push(succ);
+            let mut tbl = Vec::new();
+            // 防止 m>63 导致移位 UB
+            let max_k = self.m.min(63);
+            for k in 0..max_k {
+                let target = self.nodes[i].node_id.wrapping_add(1u64 << k);
+                let succ = self.successor_index(target);
+                tbl.push(succ);
             }
-            self.fingers[i] = table;
-        }
-        // Synchronize finger table to each Node
-        for (i, node) in self.nodes.iter_mut().enumerate() {
-            node.finger = self.fingers[i].clone();
+            self.fingers[i] = tbl;
         }
     }
 
-    /// Returns the index of the successor node for a given key
+    /// 在 node_ids 中二分，找 key 的后继下标
+    #[inline]
     pub fn successor_index(&self, key: u64) -> usize {
-        let n = self.node_ids.len();
-        if n == 1 { return 0; }
-        let mut lo = 0usize;
-        let mut hi = n;
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            if self.node_ids[mid] >= key { hi = mid; } else { lo = mid + 1; }
+        match self.node_ids.binary_search(&key) {
+            Ok(i) => i,
+            Err(i) => {
+                if i >= self.node_ids.len() { 0 } else { i }
+            }
         }
-        if lo < n { lo } else { 0 }
     }
 
-    /// Check if x is in (a, b] (clockwise, inclusive of b)
     #[inline]
     fn in_interval_open_closed(&self, x: u64, a: u64, b: u64) -> bool {
+        // 环上的 (a, b]
         if a < b {
             x > a && x <= b
         } else if a > b {
@@ -81,72 +79,80 @@ impl Network {
 
     fn closest_preceding_finger(&self, idx: usize, key: u64) -> usize {
         let table = &self.fingers[idx];
-        let my = self.nodes[idx].node_id;
+        let my_id = self.nodes[idx].node_id;
         for &j in table.iter().rev() {
             let cand = self.nodes[j].node_id;
-            if self.in_interval_open_closed(cand, my, key.wrapping_sub(1)) {
+            if self.in_interval_open_closed(cand, my_id, key.wrapping_sub(1)) {
                 return j;
             }
         }
         idx
     }
 
-    /// Starting from an entry node, find the successor for the given key; returns (index, hops)
+    /// 从入口节点出发，找到 key 的后继（返回：(后继下标, 跳数)）
     pub fn find_successor_from(&self, mut idx: usize, key: u64) -> (usize, usize) {
         let mut hops = 0usize;
+
+        // 先看自己与后继能否直接覆盖
         let succ0 = self.fingers[idx][0];
         let my0 = self.nodes[idx].node_id;
         if self.in_interval_open_closed(key, my0, self.nodes[succ0].node_id) {
             return (succ0, 1);
         }
+
         loop {
             let next = self.closest_preceding_finger(idx, key);
-            if next == idx {
-                idx = self.fingers[idx][0];
-            } else {
-                idx = next;
-            }
+            idx = if next == idx { self.fingers[idx][0] } else { next };
             hops += 1;
+
             let succ = self.fingers[idx][0];
             let my = self.nodes[idx].node_id;
             if self.in_interval_open_closed(key, my, self.nodes[succ].node_id) {
-                hops += 1;
-                return (succ, hops);
+                return (succ, hops + 1);
             }
-            if hops > self.nodes.len() * 4 {
-                // Fallback: to avoid non-convergence in extreme cases
-                return (self.successor_index(key), hops);
-            }
+            if hops > self.nodes.len() + 2 { break; }
         }
+        (self.fingers[idx][0], hops.max(1))
     }
 
-    /// Insert a segment into the network
+    /// 插入：从 entry_node 出发找到 key 的负责节点并写入；返回路由跳数
     pub fn insert(&mut self, entry_node: usize, seg: Segment) -> usize {
-        let (target, _hops) = self.find_successor_from(entry_node % self.nodes.len(), seg.hilbert_key);
-        self.nodes[target].insert(seg);
+        let (idx, hops) = self.find_successor_from(entry_node % self.nodes.len().max(1), seg.hilbert_key);
+        self.nodes[idx].insert(seg);
         self.total_inserts += 1;
-        target
+        hops
     }
 
-    /// Returns the closed interval [start, end] that this node is responsible for and whether it wraps around zero
-    /// (Chord: (prev, self] -> [prev+1, self])
-    #[inline]
+    /// 计算某个节点在环上的**负责区间**：(prev(node).id + 1 ..= node.id)，返回 (start, end, wrapped)
     fn node_interval(&self, idx: usize) -> (u64, u64, bool) {
         let n = self.nodes.len();
-        if n == 1 {
-            return (0, u64::MAX, false);
-        }
-        let n_id = self.nodes[idx].node_id;
-        let prev_idx = if idx == 0 { n - 1 } else { idx - 1 };
-        let prev_id = self.nodes[prev_idx].node_id;
+        if n == 0 { return (0, 0, false); }
+        let prev = if idx == 0 { n - 1 } else { idx - 1 };
+        let prev_id = self.nodes[prev].node_id;
+        let id = self.nodes[idx].node_id;
         let start = prev_id.wrapping_add(1);
-        let end = n_id;
-        let wrapped = start > end; // e.g., prev = MAX-10, end = 100
+        let end = id;
+        let wrapped = start > end;
         (start, end, wrapped)
     }
 
-    /// Basic query (does not return node information) --
-    /// correctly uses (prev, self] as the node's responsible interval; supports wrap-around
+    /// 公开的负责区间（便于统计/校验）
+    pub fn node_responsible_interval(&self, idx: usize) -> (u64, u64, bool) {
+        self.node_interval(idx)
+    }
+
+    /// 简化：只取 (start, end)
+    pub fn node_key_range(&self, idx: usize) -> (u64, u64) {
+        let (s, e, _) = self.node_interval(idx);
+        (s, e)
+    }
+
+    /// 返回某节点的 ID（环位置）
+    pub fn node_id_of(&self, idx: usize) -> u64 {
+        self.nodes[idx].node_id
+    }
+
+    /// 基本区间查询（不返回节点信息）：返回 (命中 segment 列表, 跳数)
     pub fn query_range(&self, entry_node: usize, key_range: (u64, u64)) -> (Vec<&Segment>, usize) {
         let (s, e) = key_range;
         let n = self.nodes.len();
@@ -164,7 +170,6 @@ impl Network {
         loop {
             let (start, end, wrapped) = self.node_interval(idx);
             if !wrapped {
-                // Node is responsible for [start, end]
                 let sub_s = s.max(start);
                 let sub_e = e.min(end);
                 if sub_s <= sub_e {
@@ -172,7 +177,7 @@ impl Network {
                     hits.extend(local);
                 }
             } else {
-                // Node is responsible for [start..=MAX] ∪ [0..=end]
+                // wrap 情况拆两段
                 if e >= start {
                     let a_s = s.max(start);
                     let a_e = e;
@@ -192,31 +197,20 @@ impl Network {
             }
 
             touched += 1;
-
-            // Check if e is covered
-            let done = if !wrapped {
-                e <= end
-            } else {
-                // When wrapping: e falls in either [start..=MAX] or [0..=end]
-                e >= start || e <= end
-            };
-            if done { break; }
-
-            // Move to the successor
+            if touched > n + 1 { break; } // 保险
             let succ = self.fingers[idx][0];
             idx = succ;
             hops += 1;
 
-            if idx == start_idx || touched > n + 1 {
-                break;
-            }
+            if idx == start_idx { break; }
+            let (_, end_cur, wrapped_cur) = self.node_interval(idx);
+            if !wrapped_cur && end_cur > e { break; }
         }
 
         (hits, hops.max(1))
     }
 
-    /// Query (returns node information & reached node set) --
-    /// same as above, but also records the indices of the nodes that are reached
+    /// 区间查询（返回节点上下文）：( (node_idx, &Segment) 列表, 跳数, 命中节点集合 )
     pub fn query_range_with_nodes(
         &self,
         entry_node: usize,
@@ -269,15 +263,8 @@ impl Network {
             if touched_nodes.last().copied() != Some(idx) {
                 touched_nodes.push(idx);
             }
+
             touched += 1;
-
-            let done = if !wrapped {
-                e <= end
-            } else {
-                e >= start || e <= end
-            };
-            if done { break; }
-
             let succ = self.fingers[idx][0];
             idx = succ;
             hops += 1;
@@ -290,62 +277,48 @@ impl Network {
         (hits, hops.max(1), touched_nodes)
     }
 
-    /// Global key envelope of the network (calculated by "bucket start key"): (global_min, global_max).
-    /// Returns None if no data is present.
-    pub fn global_key_envelope(&self) -> Option<(u64, u64)> {
-        let mut gmin = u64::MAX;
-        let mut gmax = 0u64;
-        let mut any = false;
-        for node in &self.nodes {
-            if let Some((&mn, _)) = node.storage.first_key_value() {
-                any = true;
-                if mn < gmin { gmin = mn; }
-            }
-            if let Some((&mx, _)) = node.storage.last_key_value() {
-                any = true;
-                if mx > gmax { gmax = mx; }
-            }
-        }
-        if any { Some((gmin, gmax)) } else { None }
-    }
-
-    /// Export node distribution
-    pub fn node_distribution_rows(&self) -> Vec<(usize, u64, usize, Option<u64>, Option<u64>)> {
-        let mut rows = Vec::with_capacity(self.nodes.len());
+    /// 导出节点负责区间 + 存储数据范围（用于核对）
+    /// (node_idx, node_id, resp_start, resp_end, wrapped, stored_total, stored_min, stored_max)
+    pub fn export_node_ranges(&self) -> Vec<(usize, u64, u64, u64, bool, usize, Option<u64>, Option<u64>)> {
+        let mut rows = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {
-            let total_count: usize = node.storage.values().map(|v| v.len()).sum();
-            if total_count == 0 {
-                rows.push((i, node.node_id, 0, None, None));
-                continue;
-            }
-            let mut mn = u64::MAX;
-            let mut mx = 0u64;
-            for (&k, _) in node.storage.iter() {
-                if k < mn { mn = k; }
-                if k > mx { mx = k; }
-            }
-            rows.push((i, node.node_id, total_count, Some(mn), Some(mx)));
+            let (rs, re, wrapped) = self.node_interval(i);
+            let (total, mn, mx) = node.stats_range();
+            rows.push((i, node.node_id, rs, re, wrapped, total, mn, mx));
         }
         rows
     }
 
+    /// 导出某节点内**真实存储**的 Segment（迭代器）
+    pub fn export_node_data(&self, idx: usize) -> impl Iterator<Item = &Segment> {
+        self.nodes[idx].iter_segments()
+    }
+
+    /// 节点分布（原有 node_distribution 的结构化版本）
+    pub fn node_distribution_rows(&self) -> Vec<(usize, u64, usize, Option<u64>, Option<u64>)> {
+        let mut out = Vec::new();
+        for (i, node) in self.nodes.iter().enumerate() {
+            let (total, mn, mx) = node.stats_range();
+            out.push((i, node.node_id, total, mn, mx));
+        }
+        out
+    }
+
+    /// 打印节点分布（调试用）
     pub fn print_node_distribution(&self) {
         println!("--- Node data distribution ---");
         for (i, node) in self.nodes.iter().enumerate() {
-            let total_count: usize = node.storage.values().map(|v| v.len()).sum();
-            if total_count == 0 {
+            let total = node.store_len();
+            if total == 0 {
                 println!("Node {} (ID={}): 0 records, key range [-, -]", i, node.node_id);
                 continue;
             }
-            let mut mn = u64::MAX;
-            let mut mx = 0u64;
-            for (&k, _) in node.storage.iter() {
-                if k < mn { mn = k; }
-                if k > mx { mx = k; }
-            }
+            let ( _t, mn, mx ) = node.stats_range();
             println!(
                 "Node {} (ID={}): {} records, key range [{}, {}]",
-                i, node.node_id, total_count, mn, mx
+                i, node.node_id, total,
+                mn.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                mx.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
             );
         }
     }

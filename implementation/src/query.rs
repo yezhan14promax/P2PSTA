@@ -1,5 +1,5 @@
 // src/query.rs
-// Responsibility: Perform distributed query on given ranges, statistics (deduplication/avg_hops/node cover), and write results to disk
+// Responsibility: Perform distributed query on given ranges, stats (deduplication/avg_hops/node cover), and write results to disk
 
 use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
@@ -9,22 +9,44 @@ use std::path::PathBuf;
 use crate::config::{Config, QueryWindow};
 use crate::placement::Placement;
 use crate::planner::PlanResult;
+use chrono;
 
 /// Calculate percentile (p ∈ (0,100]). Returns 0.0 if empty.
 fn percentile(mut xs: Vec<usize>, p: f64) -> f64 {
     if xs.is_empty() { return 0.0; }
     xs.sort_unstable();
     let n = xs.len();
-    let rank = ((p / 100.0) * (n as f64 - 1.0)).round() as usize;
-    xs[rank.min(n - 1)] as f64
+    let rank = (p / 100.0) * (n as f64 - 1.0);
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi { xs[lo] as f64 } else { xs[lo] as f64 * (hi as f64 - rank) + xs[hi] as f64 * (rank - lo as f64) }
 }
 
-/// Query executor
+fn parse_time_str(s: &str) -> u64 {
+    if let Ok(v) = s.trim().parse::<i64>() { return v.max(0) as u64; }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return dt.with_timezone(&chrono::Utc).timestamp().max(0) as u64;
+    }
+    use chrono::NaiveDateTime;
+    const FMTS: [&str; 4] = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ];
+    for fmt in FMTS {
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc).timestamp() as u64;
+        }
+    }
+    0
+}
+
 pub struct QueryExecutor<'a, P: Placement> {
-    pub placement: &'a P,
-    pub out_dir: PathBuf,
-    pub print_first: usize,
-    pub cfg: &'a Config,
+    placement: &'a P,
+    out_dir: PathBuf,
+    print_first: usize,
+    cfg: &'a Config,
 }
 
 impl<'a, P: Placement> QueryExecutor<'a, P> {
@@ -44,7 +66,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
         let qdir = self.out_dir.join(format!("query_{:02}_{}", qi, name));
         create_dir_all(&qdir)?;
 
-        // ========== window.txt ========== 
+        // ========== window.txt ==========
         {
             let mut wf = File::create(qdir.join("window.txt"))?;
             writeln!(wf, "# Query Window")?;
@@ -82,7 +104,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
         let save_with_nodes = self.cfg.experiment.metrics.save_with_nodes.unwrap_or(true);
         let mut rfn = if save_with_nodes {
             let mut f = File::create(qdir.join("query_results_with_nodes.csv"))?;
-            writeln!(f, "range_idx,node_idx,traj_id,segment_id,hilbert_key,payload")?;
+            writeln!(f, "range_idx,node_idx,node_id,user,traj_id,lat,lon,datetime")?;
             Some(f)
         } else { None };
 
@@ -98,11 +120,12 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
         let mut total_hits_with_overlap = 0usize;
         let mut total_hops = 0usize;
         let mut uniq: HashSet<usize> = HashSet::new();
-        let mut cover_counts: Vec<usize> = Vec::with_capacity(plan.ranges_merged.len());
+        let mut cover_counts: Vec<usize> = Vec::new();
 
-        // ========== Execute query ==========
-        for (idx, (s, e)) in plan.ranges_merged.iter().cloned().enumerate() {
-            // Use the interface with node information
+        let mut total_invalid_visits = 0usize;
+
+        for (idx, &(s, e)) in plan.ranges_merged.iter().enumerate() {
+            // run distributed query
             let (hits_nodes, hops, touched_nodes) =
                 self.placement.query_range_with_nodes(0, (s, e));
             total_hops += hops;
@@ -121,8 +144,15 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
                 if let Some(ref mut fwn) = rfn {
                     writeln!(
                         fwn,
-                        "{},{},{},{},{},{}",
-                        idx, node_idx, seg.traj_id, seg.segment_id, seg.hilbert_key, seg.payload
+                        "{},{},{},{},{},{},{},{}",
+                        idx,
+                        node_idx,
+                        self.placement.node_id(*node_idx),
+                        seg.payload.split(',').next().unwrap_or(""),
+                        seg.traj_id,
+                        seg.lat,
+                        seg.lon,
+                        seg.payload.split(',').nth(4).unwrap_or( &seg.ts.to_string() )
                     )?;
                 }
             }
@@ -136,7 +166,7 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             }
             writeln!(fh, "{},{},{},{},{}", idx, s, e, just_hits.len(), hops)?;
 
-            // Detail without node: write original CSV line (namely user,traj_id,lat,lon,datetime)
+            // dump results (5 columns)
             for seg in just_hits {
                 writeln!(rf, "{}", seg.payload)?;
             }
@@ -145,6 +175,17 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             if let Some(ref mut fc) = fcover {
                 writeln!(fc, "{},{}", idx, touched_nodes.len())?;
             }
+
+            // Invalid node visits: touched nodes that do not intersect [s,e]
+            let mut invalid_node_visits = 0usize;
+            for &ni in &touched_nodes {
+                let (ns, ne, _wrapped) = self.placement.node_responsible_interval(ni);
+                if e < ns || ne < s { invalid_node_visits += 1; }
+            }
+            total_invalid_visits += invalid_node_visits;
+            // Append invalid visits to summary range stats file (optional)
+            // (We keep ranges_and_hits.csv format stable; invalid visits go to summary.txt below)
+
             cover_counts.push(touched_nodes.len());
         }
 
@@ -168,16 +209,15 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
             let avg_hops = if plan.ranges_merged.is_empty() {
                 0.0
             } else {
-                total_hops as f64 / plan.ranges_merged.len() as f64
+                total_hops as f64 / (plan.ranges_merged.len() as f64)
             };
             writeln!(sf, "avg_hops          : {:.2}", avg_hops)?;
 
-            // Node cover statistics
-            if let Some(ref _fc) = fcover {
-                let mean = if cover_counts.is_empty() {
-                    0.0
-                } else {
-                    cover_counts.iter().copied().map(|x| x as f64).sum::<f64>() / cover_counts.len() as f64
+            // cover percentiles
+            if !cover_counts.is_empty() {
+                let mean = {
+                    let s: usize = cover_counts.iter().sum();
+                    s as f64 / cover_counts.len() as f64
                 };
                 let p95 = percentile(cover_counts.clone(), 95.0);
                 let p99 = percentile(cover_counts.clone(), 99.0);
@@ -186,9 +226,40 @@ impl<'a, P: Placement> QueryExecutor<'a, P> {
                 writeln!(sf, "node_cover_p95    : {:.2}", p95)?;
                 writeln!(sf, "node_cover_p99    : {:.2}", p99)?;
                 writeln!(sf, "node_cover_max    : {}", max)?;
+                writeln!(sf, "invalid_node_visits_total : {}", total_invalid_visits)?;
             }
         }
 
+        // Verification
+        let _ = self.verify_against_csv(&qdir, q);
+        Ok(())
+    }
+
+    /// Verify: count points in original CSV within window and compare with returned points
+    fn verify_against_csv(&self, qdir: &std::path::Path, q: &crate::config::QueryWindow) -> std::io::Result<()> {
+        use std::io::BufRead;
+        let res_file = std::fs::File::open(qdir.join("query_results.csv"))?;
+        let returned = std::io::BufReader::new(res_file).lines().skip(1).count();
+
+        // Count truth from original CSV
+        let mut truth = 0usize;
+        let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_path(&self.cfg.data.csv_path)?;
+        let t0 = parse_time_str(&q.t_start);
+        let t1 = parse_time_str(&q.t_end);
+        for rec in rdr.records() {
+            let r = rec?;
+            let lat: f64 = r.get(2).unwrap_or("").parse().unwrap_or(f64::NAN);
+            let lon: f64 = r.get(3).unwrap_or("").parse().unwrap_or(f64::NAN);
+            let ts:  u64 = parse_time_str(r.get(4).unwrap_or(""));
+            if lat>=q.lat_min && lat<=q.lat_max && lon>=q.lon_min && lon<=q.lon_max && ts>=t0 && ts<=t1 {
+                truth += 1;
+            }
+        }
+        let mut vf = std::fs::File::create(qdir.join("verification.txt"))?;
+        use std::io::Write;
+        writeln!(vf, "truth_points_in_csv={}", truth)?;
+        writeln!(vf, "returned_points={}", returned)?;
+        writeln!(vf, "match={}", (truth == returned))?;
         Ok(())
     }
 }

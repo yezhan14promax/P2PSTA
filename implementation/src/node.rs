@@ -25,17 +25,18 @@ impl Segment {
             traj_id,
             segment_id,
             hilbert_key,
+            payload: payload.into(),
             lat,
             lon,
             ts,
-            payload: payload.into(),
         }
     }
 }
 
+/// One physical node on the ring
 #[derive(Debug)]
 pub struct Node {
-    pub node_id: u64,               // Node ID (position on the ring)
+    pub node_id: u64,               // Position on the ring (MSB-first 0..2^m-1)
     pub m: usize,                   // Key width
     pub tail_bits: u8,              // Bucket tail bits (stop_tail_bits)
     pub finger: Vec<usize>,         // Finger table (populated by Network)
@@ -79,22 +80,24 @@ impl Node {
     pub fn query_range(&self, range: (u64, u64)) -> (Vec<&Segment>, usize) {
         let (s, e) = range;
         let span = self.bucket_span();
+        if self.storage.is_empty() {
+            return (Vec::new(), 1);
+        }
+        // locate first bucket whose end >= s  => bucket_start <= s <= bucket_end
+        // i.e., bucket_start in [s-span+1, e]
+        let start_key = s.saturating_sub(span - 1);
         let mut out: Vec<&Segment> = Vec::new();
-
-        // Naive traversal (BTreeMap can be improved using range queries by key, but correctness is prioritized here)
-        for (&k, vec_seg) in self.storage.iter() {
-            let k_end = if span == u64::MAX { u64::MAX } else { k.saturating_add(span - 1) };
-            // Check for intersection: K <= e && k_end >= s
-            if k <= e && k_end >= s {
-                for seg in vec_seg {
-                    out.push(seg);
-                }
+        for (&b, v) in self.storage.range(start_key..) {
+            let b_end = if span == u64::MAX { u64::MAX } else { b.saturating_add(span - 1) };
+            if b > e { break; }
+            if !(e < b || b_end < s) {
+                // intersects
+                for seg in v { out.push(seg); }
             }
         }
         (out, 1)
     }
 
-    /// Statistics: total count of segments
     pub fn data_len(&self) -> usize {
         self.storage.values().map(|v| v.len()).sum()
     }
@@ -107,5 +110,15 @@ impl Node {
         } else {
             (total, None, None)
         }
+    }
+
+    /// Return total number of stored segments
+    pub fn store_len(&self) -> usize {
+        self.data_len()
+    }
+
+    /// Iterate over all stored segments
+    pub fn iter_segments(&self) -> impl Iterator<Item=&Segment> {
+        self.storage.values().flat_map(|v| v.iter())
     }
 }
