@@ -134,7 +134,9 @@ fn ingest_csv_into_network(
         let key = encode_point(sfc, lat, lon, ts);
         let traj_id = idx_traj.and_then(|i| rec.get(i)).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         let segment_id = count as u32;
-        let payload = if let Some(iu) = idx_user { rec.get(iu).unwrap_or("").to_string() } else { String::new() };
+        let user   = idx_user.and_then(|i| rec.get(i)).unwrap_or("");
+        let dt_str = rec.get(idx_dt).unwrap_or(""); 
+        let payload = format!("{},{},{},{},{}", user, traj_id, lat, lon, dt_str);
         let seg = Segment { traj_id, segment_id, hilbert_key: key, lat, lon, ts, payload };
 
         net.insert(entry_node, seg);
