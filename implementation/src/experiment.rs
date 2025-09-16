@@ -9,7 +9,9 @@ use chrono::{Local, Utc};
 use csv::StringRecord;
 use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
+use std::collections::HashMap;
+
 
 pub fn run_experiment(cfg: &Config) {
     // 1) 输出目录
@@ -105,7 +107,7 @@ pub fn run_experiment(cfg: &Config) {
                     "{},{},{},{},{},{},{},{}",
                     i,           // node_idx
                     id,          // node_id
-                    seg.hilbert_key,
+                    seg.sfc_key,
                     user,
                     traj_id,
                     lat,
@@ -116,7 +118,8 @@ pub fn run_experiment(cfg: &Config) {
         }
     }
 
-    // 6) ingest_summary.txt
+    // 6) ingest_summary.txt and params.txt
+    // ingest_summary.txt
     {
         let mut f = BufWriter::new(File::create(run_dir.join("ingest_summary.txt")).expect("create ingest_summary.txt"));
         writeln!(f, "lat_min = {}", lat_min).ok();
@@ -126,20 +129,39 @@ pub fn run_experiment(cfg: &Config) {
         writeln!(f, "ts_min  = {}", ts_min).ok();
         writeln!(f, "ts_max  = {}", ts_max).ok();
     }
+    // params.txt
+    write_params_snapshot(&run_dir, cfg);
 
     // 7) 路由自检
     sanity_probe(&net, &sample_keys);
 
     // 8) 执行查询
     {
-        let executor = QueryExecutor::new(&net, run_dir.clone(), cfg);
+        let executor = QueryExecutor::new(&net, run_dir.clone(), &cfg);
         for (qi, q) in cfg.experiment.queries.iter().enumerate() {
             let name = q.name.clone().unwrap_or_else(|| format!("window_{:02}", qi));
-            let plan: PlanResult = plan_window(cfg, &sfc_params, q);
+            // 这里把三参调用改为二参（与 planner.rs 新签名一致）
+            let plan: PlanResult = plan_window(cfg, q);
             let t_q = std::time::Instant::now();
-            if let Err(e) = executor.run_one_window(qi, &name, q, &plan) {
+
+            // 展开把 PlanResult 的字段传给 run_one_window（与你当前 query.rs 对齐）
+            let ranges_merged: &[(u64, u64)] = &plan.ranges_merged;
+            let raw_ranges_len: usize = plan.ranges_raw.len();
+            let t_start_s: u64 = plan.t_start_s;
+            let t_end_s: u64 = plan.t_end_s;
+
+            if let Err(e) = executor.run_one_window(
+                qi,
+                &name,
+                q,
+                ranges_merged,
+                raw_ranges_len,
+                t_start_s,
+                t_end_s,
+            ) {
                 eprintln!("Query window {} failed: {}", name, e);
             }
+
             use std::io::Write;
             let mut tf = std::fs::OpenOptions::new()
                 .create(true).append(true)
@@ -149,8 +171,74 @@ pub fn run_experiment(cfg: &Config) {
         }
     }
 
+
     println!("All queries finished. Results at {:?}", run_dir);
 }
+
+fn write_params_snapshot(run_dir: &Path, cfg: &crate::config::Config) {
+    let params_path = run_dir.join("params.txt");
+
+    // 打开文件（失败就报错但不 panic）
+    let file = match File::create(&params_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("create params.txt failed: {e}");
+            return;
+        }
+    };
+    let mut f = BufWriter::new(file);
+
+    // 计算一次“推导后的 SFC 参数”（位数、环宽、全局范围等）
+    let sfc_params = crate::sfc::build_sfc_params(cfg);
+
+    // 写配置快照 —— 全部用 `_ = writeln!(...)`，避免 `?` 引起编译器抱怨
+    _ = writeln!(f, "[Global Config]");
+    _ = writeln!(f, "data.csv_path={}", cfg.data.csv_path);
+    _ = writeln!(f, "data.max_ingest={:?}", cfg.data.max_ingest);
+
+    _ = writeln!(f, "\n[SFC Config]");
+    _ = writeln!(f, "algorithm={}", cfg.sfc.algorithm);
+    _ = writeln!(f, "center_lat={}", cfg.sfc.center_lat);
+    _ = writeln!(f, "x_precision_m={}", cfg.sfc.x_precision_m);
+    _ = writeln!(f, "y_precision_m={}", cfg.sfc.y_precision_m);
+    _ = writeln!(f, "t_precision_s={}", cfg.sfc.t_precision_s);
+
+    // 推导出的位数与环宽等（来自 SfcParams）
+    _ = writeln!(
+        f,
+        "derived_bits: lx={} ly={} lt={} ring_m={}",
+        sfc_params.bits.lx, sfc_params.bits.ly, sfc_params.bits.lt, sfc_params.ring_m
+    );
+    _ = writeln!(
+        f,
+        "global_lat=[{}, {}] global_lon=[{}, {}] global_time=[{}, {}]",
+        sfc_params.glat.0,
+        sfc_params.glat.1,
+        sfc_params.glon.0,
+        sfc_params.glon.1,
+        sfc_params.gtime.0,
+        sfc_params.gtime.1
+    );
+
+    _ = writeln!(f, "\n[Experiment Config]");
+    _ = writeln!(f, "stop_tail_bits={}", cfg.experiment.stop_tail_bits);
+    _ = writeln!(f, "merge_gap_keys={}", cfg.experiment.merge_gap_keys);
+    _ = writeln!(f, "max_ranges={:?}", cfg.experiment.max_ranges);
+
+    _ = writeln!(f, "\n[Metrics]");
+    _ = writeln!(f, "precise_hits={:?}", cfg.experiment.metrics.precise_hits);
+    _ = writeln!(f, "save_with_nodes={:?}", cfg.experiment.metrics.save_with_nodes);
+
+    _ = writeln!(f, "\n[Queries] total={}", cfg.experiment.queries.len());
+    for (i, q) in cfg.experiment.queries.iter().enumerate() {
+        _ = writeln!(
+            f,
+            "Q{:02}: name={:?}, lat=[{},{}], lon=[{},{}], time=[{},{}]",
+            i, q.name, q.lat_min, q.lat_max, q.lon_min, q.lon_max, q.t_start, q.t_end
+        );
+    }
+}
+
 
 fn make_run_dir() -> PathBuf {
     let ts = Local::now().format("run_%Y%m%d_%H%M%S").to_string();
@@ -192,52 +280,85 @@ fn ingest_csv_into_network(
     let mut sample_keys: Vec<u64> = Vec::new();
     let entry_node: usize = 0;
 
+    // 对“同一原始轨迹串”计数，生成单调的 segment_id
+    use std::collections::HashMap;
+    let mut seg_counter: HashMap<String, u32> = HashMap::new();
+
     for result in rdr.records() {
+        if count >= max_ingest { break; }
         let rec = match result { Ok(r) => r, Err(_) => continue };
 
+        // 读取基础字段
         let lat: f64 = match rec.get(idx_lat).and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
         let lon: f64 = match rec.get(idx_lon).and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
-        let ts:  u64 = parse_time(rec.get(idx_dt).unwrap_or(""));
+        let dt_str   = rec.get(idx_dt).unwrap_or("").trim();
+        let ts:  u64 = parse_time(dt_str);
 
-        let traj_id: u64 = idx_traj.and_then(|i| rec.get(i)).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let user   = idx_user.and_then(|i| rec.get(i)).unwrap_or("");
+        // user 用原始字符串（可以保留前导零）
+        let user_str = idx_user.and_then(|i| rec.get(i)).unwrap_or("").trim().to_string();
 
+        // 轨迹“原始串”——例如 "000/20081023025304"
+        let traj_str = idx_traj.and_then(|i| rec.get(i)).unwrap_or("").trim();
+
+        // 1) 稳定哈希成 traj_id（不会全部变 0，也能复现实验）
+        let traj_id: u64 = if traj_str.is_empty() {
+            stable_u64_from_str(&format!("{}_{}", user_str, dt_str)) // 兜底：用 (user, datetime)
+        } else {
+            stable_u64_from_str(traj_str)
+        };
+
+        // 2) 同一轨迹内的 segment_id 单调自增
+        let sid_ref = seg_counter.entry(traj_str.to_string()).or_insert(0);
+        let segment_id: u32 = *sid_ref;
+        *sid_ref = sid_ref.saturating_add(1);
+
+        // 3) 计算 SFC key（Z3）
         let key = encode_point(sfc_params, lat, lon, ts);
 
-        // payload: 5 列，便于直接写 query_results.csv
-        let payload = format!("{},{},{},{},{}", user, traj_id, lat, lon, rec.get(idx_dt).unwrap_or(""));
+        // 4) payload：保留原始 5 列，便于导出与审计
+        let payload = format!("{},{},{},{},{}", user_str, traj_str, lat, lon, dt_str);
 
+        // 5) 构造 Segment（需要 node.rs 里的 Segment 有 user:String / sfc_key / payload 等字段）
         let seg = Segment {
+            user: user_str,
             traj_id,
-            segment_id: 0,
-            hilbert_key: key,
+            segment_id,
+            sfc_key: key,
             payload,
             lat,
             lon,
             ts,
         };
 
+        // 插入网络
         net.insert(entry_node, seg);
         count += 1;
 
-        // stats
+        // —— 进度与采样 —— //
+        if count % 50_000 == 0 {
+            sample_keys.push(key);         // 路由自检采样
+        }
+        if count % 400_000 == 0 {
+            println!("Ingested {} rows...", count);  // ✅ 进度打印
+        }
+
+        // min/max 统计
         if lat < lat_min { lat_min = lat; }
         if lat > lat_max { lat_max = lat; }
         if lon < lon_min { lon_min = lon; }
         if lon > lon_max { lon_max = lon; }
-        if ts < ts_min { ts_min = ts; }
-        if ts > ts_max { ts_max = ts; }
-
-        if sample_keys.len() < 100 { sample_keys.push(key); }
-        if count % 100000 == 0 { println!("Ingested {} rows...", count); }
-        if count >= max_ingest { println!("Reached max_ingest: {}", max_ingest); break; }
+        if ts  < ts_min  { ts_min  = ts;  }
+        if ts  > ts_max  { ts_max  = ts;  }
     }
 
-    if count == 0 {
-        lat_min = 0.0; lat_max = 0.0; lon_min = 0.0; lon_max = 0.0; ts_min = 0; ts_max = 0;
+    // 保底：保证 sample_keys 非空
+    if sample_keys.is_empty() && count > 0 {
+        sample_keys.push(encode_point(sfc_params, (lat_min + lat_max) * 0.5, (lon_min + lon_max) * 0.5, ts_min));
     }
+
     (count, lat_min, lat_max, lon_min, lon_max, ts_min, ts_max, sample_keys)
 }
+
 
 fn find_col(headers: &StringRecord, names: &[&str]) -> Option<Option<usize>> {
     let lower: Vec<String> = headers.iter().map(|s| s.to_lowercase()).collect();
@@ -246,6 +367,17 @@ fn find_col(headers: &StringRecord, names: &[&str]) -> Option<Option<usize>> {
     }
     None
 }
+
+#[inline]
+fn stable_u64_from_str(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in s.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 
 fn parse_time(s: &str) -> u64 {
     // 1) 纯数字秒
@@ -272,7 +404,6 @@ fn parse_time(s: &str) -> u64 {
 
 // ========== sanity ==========
 use rand::seq::SliceRandom;
-use rand::rng;
 
 fn sanity_probe(net: &Network, sample_keys: &Vec<u64>) {
     let mut rng = rand::rng();

@@ -117,7 +117,7 @@ impl Network {
 
     /// 插入：从 entry_node 出发找到 key 的负责节点并写入；返回路由跳数
     pub fn insert(&mut self, entry_node: usize, seg: Segment) -> usize {
-        let (idx, hops) = self.find_successor_from(entry_node % self.nodes.len().max(1), seg.hilbert_key);
+        let (idx, hops) = self.find_successor_from(entry_node % self.nodes.len().max(1), seg.sfc_key);
         self.nodes[idx].insert(seg);
         self.total_inserts += 1;
         hops
@@ -225,37 +225,107 @@ impl Network {
             return (hits, 1, vec![0]);
         }
 
-        let (mut idx, mut hops) = self.find_successor_from(entry_node % n, s);
-        let start_idx = idx;
+        // hops 只取 finger 路由步数
+        let (mut idx, route_hops) = self.find_successor_from(entry_node % n, s);
         let mut hits: Vec<(usize, &Segment)> = Vec::new();
         let mut touched_nodes: Vec<usize> = Vec::new();
-        let mut touched = 0usize;
+        let mut visits = 0usize;
+
+        let query_wrapped = s > e;
+        let mut crossed_zero = false;
 
         loop {
-            let (start, end, wrapped) = self.node_interval(idx);
+            let (start, end, wrapped_node) = self.node_interval(idx);
 
-            if !wrapped {
-                let sub_s = s.max(start);
-                let sub_e = e.min(end);
-                if sub_s <= sub_e {
-                    let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
-                    for seg in local { hits.push((idx, seg)); }
-                }
-            } else {
-                if e >= start {
-                    let a_s = s.max(start);
-                    let a_e = e;
-                    if a_s <= a_e {
-                        let (local, _) = self.nodes[idx].query_range((a_s, a_e));
+            // 与查询区间求交并查本地
+            if !query_wrapped {
+                // 查询不 wrap：与当前节点（可能 wrap 或不 wrap）求交
+                if !wrapped_node {
+                    let sub_s = s.max(start);
+                    let sub_e = e.min(end);
+                    if sub_s <= sub_e {
+                        let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
                         for seg in local { hits.push((idx, seg)); }
                     }
+                    // 关键：一旦该节点的 end 覆盖到 e，则早停
+                    if end >= e {
+                        if touched_nodes.last().copied() != Some(idx) {
+                            touched_nodes.push(idx);
+                        }
+                        break;
+                    }
+                } else {
+                    // 节点自身 wrap：分两段与 [s,e] 求交
+                    if e >= start {
+                        let sub_s = s.max(start);
+                        let sub_e = e;
+                        if sub_s <= sub_e {
+                            let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
+                            for seg in local { hits.push((idx, seg)); }
+                        }
+                    }
+                    if s <= end {
+                        let sub_s = s;
+                        let sub_e = e.min(end);
+                        if sub_s <= sub_e {
+                            let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
+                            for seg in local { hits.push((idx, seg)); }
+                        }
+                    }
+                    // 节点 wrap 时不一定已经覆盖到 e，继续推进到下一个非 wrap 节点，届时检查 end>=e 再停
                 }
-                if s <= end {
-                    let b_s = s;
-                    let b_e = e.min(end);
-                    if b_s <= b_e {
-                        let (local, _) = self.nodes[idx].query_range((b_s, b_e));
-                        for seg in local { hits.push((idx, seg)); }
+            } else {
+                // 查询 wrap：覆盖 [s..MAX] ∪ [0..e]
+                // 第一段：[s..MAX]
+                if !crossed_zero {
+                    if !wrapped_node {
+                        let sub_s = s.max(start);
+                        let sub_e = u64::MAX.min(end);
+                        if sub_s <= sub_e {
+                            let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
+                            for seg in local { hits.push((idx, seg)); }
+                        }
+                        // 如果当前节点 end == u64::MAX，下一跳必跨零
+                        if end == u64::MAX { crossed_zero = true; }
+                    } else {
+                        // 节点 wrap：也会覆盖到 MAX，下一跳跨零
+                        let sub_s = s.max(start);
+                        let sub_e = u64::MAX;
+                        if sub_s <= sub_e {
+                            let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
+                            for seg in local { hits.push((idx, seg)); }
+                        }
+                        crossed_zero = true;
+                    }
+                } else {
+                    // 第二段：[0..e]
+                    if !wrapped_node {
+                        let sub_s = 0u64.max(start);
+                        let sub_e = e.min(end);
+                        if sub_s <= sub_e {
+                            let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
+                            for seg in local { hits.push((idx, seg)); }
+                        }
+                        // 一旦 end >= e，第二段覆盖完成，早停
+                        if end >= e {
+                            if touched_nodes.last().copied() != Some(idx) {
+                                touched_nodes.push(idx);
+                            }
+                            break;
+                        }
+                    } else {
+                        // 节点 wrap：把 [0..end] 这段与 [0..e] 求交
+                        if e <= end {
+                            let (local, _) = self.nodes[idx].query_range((0, e));
+                            for seg in local { hits.push((idx, seg)); }
+                            if touched_nodes.last().copied() != Some(idx) {
+                                touched_nodes.push(idx);
+                            }
+                            break;
+                        } else {
+                            let (local, _) = self.nodes[idx].query_range((0, end));
+                            for seg in local { hits.push((idx, seg)); }
+                        }
                     }
                 }
             }
@@ -264,18 +334,18 @@ impl Network {
                 touched_nodes.push(idx);
             }
 
-            touched += 1;
+            // 推进到后继（线性推进，仅用于覆盖；不再计入 hops）
+            visits += 1;
+            if visits > n + 1 { break; } // 保险
             let succ = self.fingers[idx][0];
+            if succ == idx { break; } // 退化
             idx = succ;
-            hops += 1;
-
-            if idx == start_idx || touched > n + 1 {
-                break;
-            }
         }
 
-        (hits, hops.max(1), touched_nodes)
+        (hits, route_hops.max(1), touched_nodes)
     }
+
+
 
     /// 导出节点负责区间 + 存储数据范围（用于核对）
     /// (node_idx, node_id, resp_start, resp_end, wrapped, stored_total, stored_min, stored_max)

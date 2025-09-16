@@ -15,7 +15,7 @@ sfc:
 
 data:
   csv_path: "geolife_clean.csv"
-  max_ingest: null # geolife_clean.csv 有 20,369,284 条记录,null 表示全部 ingest
+  max_ingest: null # geolife_clean.csv 有 19632236 条记录,null 表示全部 ingest
 
 output:
   result_dir: "results"
@@ -30,8 +30,8 @@ experiment:
   x_precision_m: 100
   y_precision_m: 100
   t_precision_s: 600
-  stop_tail_bits: 8
-  merge_gap_keys: 255  # 2^k - 1,k=8 表示允许的最大 gap
+  stop_tail_bits: 6
+  merge_gap_keys: 127  # 2^k - 1,k=7 表示允许的最大 gap
   max_ranges: 512    # 这里是实验的 max_ranges
   print_first: 15
 
@@ -48,7 +48,7 @@ experiment:
   metrics:
     compute_node_cover: true
     save_with_nodes: true
-    precise_hits: false
+    precise_hits: true
 
   queries:
     - name: "forbidden_city"

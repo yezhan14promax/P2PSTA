@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct Segment {
+    pub user: String,         // User ID
     pub traj_id: u64,
     pub segment_id: u32,
-    pub hilbert_key: u64,
+    pub sfc_key: u64,
     pub payload: String,
     pub lat: f64,           // Latitude
     pub lon: f64,           // Longitude
@@ -13,18 +14,20 @@ pub struct Segment {
 
 impl Segment {
     pub fn new(
+        user: String,
         traj_id: u64,
         segment_id: u32,
-        hilbert_key: u64,
+        sfc_key: u64,
         lat: f64,
         lon: f64,
         ts: u64,
         payload: impl Into<String>,
     ) -> Self {
         Self {
+            user:user.to_string(),
             traj_id,
             segment_id,
-            hilbert_key,
+            sfc_key,
             payload: payload.into(),
             lat,
             lon,
@@ -71,7 +74,7 @@ impl Node {
 
     /// Insert: writes a segment under its bucket starting key
     pub fn insert(&mut self, seg: Segment) {
-        let b = self.bucket_start(seg.hilbert_key);
+        let b = self.bucket_start(seg.sfc_key);
         self.storage.entry(b).or_default().push(seg);
     }
 

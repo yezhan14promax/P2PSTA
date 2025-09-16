@@ -1,265 +1,326 @@
-// src/query.rs
-// Responsibility: Perform distributed query on given ranges, stats (deduplication/avg_hops/node cover), and write results to disk
+//! query.rs
+//! 分布式查询执行：消费 planner 产出的区间（已做“约束注入法”），分发到网络层，做精确过滤与去重，落盘统计。
+//!
+//! 输出（每个 query 一个目录）：
+//! - ranges_and_hits_with_nodes.csv（逐条命中诊断，含 route_hops / node_visits）
+//! - ranges_and_hits.csv（✅ 新增：每区间聚合汇总：range_idx,start,end,hits,route_hops,node_visits）
+//! - ranges_node_cover.csv（兼容旧流程；其“覆盖数”已包含在上面的聚合文件中）
+//! - query_results.csv（真实业务结果：user,traj_id,lat,lon,datetime）
+//! - summary.txt（含 avg_route_hops / avg_node_cover 等）
+//! - window.txt（窗口与区间数量快照）
+//!
+//! 控制台打印：
+//! - [QueryWindow #i name] raw=X -> merged=Y
+//! - Range[k] [s, e] -> N segments (H hops, V nodes)（最多打印前 N 条）
 
 use std::collections::HashSet;
-use std::fs::{create_dir_all, File};
-use std::io::Write;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+
+use csv::WriterBuilder;
+use chrono::{DateTime, Utc};
 
 use crate::config::{Config, QueryWindow};
-use crate::placement::Placement;
-use crate::planner::PlanResult;
-use chrono;
+use crate::network::Network;
+use crate::node::Segment;
 
-/// Calculate percentile (p ∈ (0,100]). Returns 0.0 if empty.
-fn percentile(mut xs: Vec<usize>, p: f64) -> f64 {
-    if xs.is_empty() { return 0.0; }
-    xs.sort_unstable();
-    let n = xs.len();
-    let rank = (p / 100.0) * (n as f64 - 1.0);
-    let lo = rank.floor() as usize;
-    let hi = rank.ceil() as usize;
-    if lo == hi { xs[lo] as f64 } else { xs[lo] as f64 * (hi as f64 - rank) + xs[hi] as f64 * (rank - lo as f64) }
+/// 最多打印多少条区间的明细（避免刷屏）
+const PRINT_RANGE_LIMIT: usize = 15;
+
+/// 用于 ranges_and_hits.csv 的每区间聚合统计
+struct RangeStat {
+    start: u64,
+    end: u64,
+    route_hops: usize,   // 该区间路由步数（来自 network 的 hops）
+    node_visits: usize,  // 该区间触达节点数
+    hits: usize,         // 该区间最终写出的命中条数（经精确过滤+去重）
 }
 
-fn parse_time_str(s: &str) -> u64 {
-    if let Ok(v) = s.trim().parse::<i64>() { return v.max(0) as u64; }
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return dt.with_timezone(&chrono::Utc).timestamp().max(0) as u64;
-    }
-    use chrono::NaiveDateTime;
-    const FMTS: [&str; 4] = [
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d",
-        "%Y/%m/%d",
-    ];
-    for fmt in FMTS {
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
-            return chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc).timestamp() as u64;
+pub struct QueryExecutor<'a> {
+    pub cfg: &'a Config,
+    pub net: &'a Network,
+    pub run_dir: PathBuf,
+}
+
+impl<'a> QueryExecutor<'a> {
+    /// 与 experiment.rs 的调用次序保持一致：(net, run_dir, cfg)
+    pub fn new(net: &'a Network, run_dir: impl AsRef<Path>, cfg: &'a Config) -> Self {
+        Self {
+            cfg,
+            net,
+            run_dir: run_dir.as_ref().to_path_buf(),
         }
     }
-    0
-}
 
-pub struct QueryExecutor<'a, P: Placement> {
-    placement: &'a P,
-    out_dir: PathBuf,
-    print_first: usize,
-    cfg: &'a Config,
-}
-
-impl<'a, P: Placement> QueryExecutor<'a, P> {
-    pub fn new(placement: &'a P, out_dir: PathBuf, cfg: &'a Config) -> Self {
-        let print_first = cfg.experiment.print_first.unwrap_or(15);
-        Self { placement, out_dir, print_first, cfg }
-    }
-
-    /// Execute a query window: write window.txt / ranges_and_hits.csv / query_results*.csv / ranges_node_cover.csv / summary.txt
+    /// 执行单个查询窗口
+    ///
+    /// - `ranges_merged`：planner 合并后的区间（已做“约束注入法”）
+    /// - `raw_ranges_len`：合并前的区间数（仅用于日志/window.txt）
+    /// - `t_start_s / t_end_s`：秒级时间边界（planner 已统一解析）
     pub fn run_one_window(
         &self,
         qi: usize,
         name: &str,
         q: &QueryWindow,
-        plan: &PlanResult,
-    ) -> std::io::Result<()> {
-        let qdir = self.out_dir.join(format!("query_{:02}_{}", qi, name));
-        create_dir_all(&qdir)?;
+        ranges_merged: &[(u64, u64)],
+        raw_ranges_len: usize,
+        t_start_s: u64,
+        t_end_s: u64,
+    ) -> std::io::Result<(usize, f64, f64)> {
+        // 读取开关（注意路径在 experiment.metrics 下）
+        let save_with_nodes = self
+            .cfg
+            .experiment
+            .metrics
+            .save_with_nodes
+            .unwrap_or(true); // 我们无论如何都写 with_nodes 明细
+        let precise_hits = self
+            .cfg
+            .experiment
+            .metrics
+            .precise_hits
+            .unwrap_or(true);
 
-        // ========== window.txt ==========
+        // 目录与文件
+        let window_dir = self.run_dir.join(format!("query_{:02}_{}", qi, name));
+        fs::create_dir_all(&window_dir)?;
+
+        // 逐条命中（诊断明细，统一写 with_nodes 版本）
+        let hits_csv_path = window_dir.join("ranges_and_hits_with_nodes.csv");
+        // 每区间聚合
+        let ranges_summary_path = window_dir.join("ranges_and_hits.csv");
+        // 兼容旧流程：区间→节点覆盖
+        let cover_csv_path = window_dir.join("ranges_node_cover.csv");
+        // 真实业务结果
+        let results_csv_path = window_dir.join("query_results.csv");
+        // 统计与窗口快照
+        let summary_path = window_dir.join("summary.txt");
+        let window_txt = window_dir.join("window.txt");
+
+        // 写 window.txt（便于审计）
         {
-            let mut wf = File::create(qdir.join("window.txt"))?;
-            writeln!(wf, "# Query Window")?;
-            writeln!(wf, "name       : {}", name)?;
-            writeln!(wf, "lat_min    : {}", q.lat_min)?;
-            writeln!(wf, "lon_min    : {}", q.lon_min)?;
-            writeln!(wf, "lat_max    : {}", q.lat_max)?;
-            writeln!(wf, "lon_max    : {}", q.lon_max)?;
-            writeln!(wf, "t_start    : {}", q.t_start)?;
-            writeln!(wf, "t_end      : {}", q.t_end)?;
-            writeln!(wf, "")?;
-            writeln!(wf, "# SFC Controls")?;
-            writeln!(wf, "algorithm      : {}", self.cfg.experiment.algorithm)?;
-            writeln!(wf, "stop_tail_bits : {}", self.cfg.experiment.stop_tail_bits)?;
-            writeln!(wf, "merge_gap_keys : {}", self.cfg.experiment.merge_gap_keys)?;
-            writeln!(wf, "max_ranges     : {:?}", self.cfg.experiment.max_ranges)?;
-            writeln!(wf, "ring_m         : {}", plan.sfc_params.ring_m)?;
+            let mut f = BufWriter::new(File::create(&window_txt)?);
+            writeln!(&mut f, "[QueryWindow #{} {}]", qi, name)?;
+            writeln!(
+                &mut f,
+                "lat:[{},{}], lon:[{},{}], time:[{},{}]",
+                q.lat_min, q.lat_max, q.lon_min, q.lon_max, q.t_start, q.t_end
+            )?;
+            writeln!(
+                &mut f,
+                "ranges: {}, merged: {}",
+                raw_ranges_len,
+                ranges_merged.len()
+            )?;
+            writeln!(&mut f, "t_start_s={}, t_end_s={}", t_start_s, t_end_s)?;
         }
 
+        // === 控制台打印：窗口头 ===
         println!(
             "[QueryWindow #{:02} {}] raw={} -> merged={}",
-            qi, name, plan.ranges_raw.len(), plan.ranges_merged.len()
+            qi,
+            name,
+            raw_ranges_len,
+            ranges_merged.len()
         );
 
-        // ========== CSV: Statistics for each range ==========
-        let mut fh = File::create(qdir.join("ranges_and_hits.csv"))?;
-        writeln!(fh, "range_idx,start,end,hits,hops")?;
+        // 逐条命中（with_nodes）CSV 表头
+        let mut wtr_hits = WriterBuilder::new().from_path(&hits_csv_path)?;
+        if save_with_nodes {
+            wtr_hits.write_record(&[
+                "range_idx",
+                "node_idx",
+                "node_id",
+                "sfc_key",
+                "traj_id",
+                "segment_id",
+                "ts",
+                "lat",
+                "lon",
+                "route_hops",
+                "node_visits",
+            ])?;
+        }
 
-        // ========== CSV: Detail without node information ==========
-        let mut rf = File::create(qdir.join("query_results.csv"))?;
-        // Only retain the five columns requested by the user (saved as the original row in Segment.payload during ingest)
-        writeln!(rf, "user,traj_id,lat,lon,datetime")?;
+        // ✅ 真实业务结果 CSV
+        let mut wtr_results = WriterBuilder::new().from_path(&results_csv_path)?;
+        wtr_results.write_record(&["user", "traj_id", "lat", "lon", "datetime"])?;
 
-        // ========== CSV: Detail with node information (optional) ==========
-        let save_with_nodes = self.cfg.experiment.metrics.save_with_nodes.unwrap_or(true);
-        let mut rfn = if save_with_nodes {
-            let mut f = File::create(qdir.join("query_results_with_nodes.csv"))?;
-            writeln!(f, "range_idx,node_idx,node_id,user,traj_id,lat,lon,datetime")?;
-            Some(f)
-        } else { None };
+        // 每区间聚合统计容器
+        let mut range_stats: Vec<RangeStat> = Vec::with_capacity(ranges_merged.len());
 
-        // ========== CSV: Node cover for each range (optional) ==========
-        let compute_node_cover = self.cfg.experiment.metrics.compute_node_cover.unwrap_or(true);
-        let mut fcover = if compute_node_cover {
-            let mut f = File::create(qdir.join("ranges_node_cover.csv"))?;
-            writeln!(f, "range_idx,node_count")?;
-            Some(f)
-        } else { None };
+        // 业务键去重：避免同一段被多个区间重复写出
+        // 注意：第三个键为 sfc_key
+        let mut uniq: HashSet<(u64, u32, u64)> = HashSet::new();
 
-        // ========== Statistics ==========
-        let mut total_hits_with_overlap = 0usize;
-        let mut total_hops = 0usize;
-        let mut uniq: HashSet<usize> = HashSet::new();
-        let mut cover_counts: Vec<usize> = Vec::new();
+        // 区间打印控制
+        let mut printed = 0usize;
+        let suppress_after = ranges_merged.len().saturating_sub(PRINT_RANGE_LIMIT);
 
-        let mut total_invalid_visits = 0usize;
+        // 按区间执行
+        for (ri, &(s, e)) in ranges_merged.iter().enumerate() {
+            let entry_node = ri % self.net.nodes.len();
+            let (hits_nodes, route_hops, touched_nodes) =
+                self.net.query_range_with_nodes(entry_node, (s, e));
 
-        for (idx, &(s, e)) in plan.ranges_merged.iter().enumerate() {
-            // run distributed query
-            let (hits_nodes, hops, touched_nodes) =
-                self.placement.query_range_with_nodes(0, (s, e));
-            total_hops += hops;
+            let node_visits = touched_nodes.len();
 
-            // Count hits (including overlaps)
-            total_hits_with_overlap += hits_nodes.len();
+            // 统计本区间最终写出的行数（通过过滤 + 去重之后）
+            let mut this_range_written = 0usize;
 
-            // Write statistics and details
-            let mut just_hits: Vec<&crate::node::Segment> = Vec::with_capacity(hits_nodes.len());
-            for (node_idx, seg) in &hits_nodes {
-                // Cross-range deduplication (by object pointer)
-                uniq.insert(*seg as *const _ as usize);
-                just_hits.push(*seg);
+            for (node_idx, seg) in hits_nodes {
+                // 精确过滤（如关闭 precise_hits，则跳过）
+                if precise_hits && !inside_window(seg, q, t_start_s, t_end_s) {
+                    continue;
+                }
+                // 业务键去重（traj_id, segment_id, sfc_key）
+                let key = (seg.traj_id, seg.segment_id, seg.sfc_key);
+                if !uniq.insert(key) {
+                    continue;
+                }
 
-                // Detail with node information (preserve original format)
-                if let Some(ref mut fwn) = rfn {
-                    writeln!(
-                        fwn,
-                        "{},{},{},{},{},{},{},{}",
-                        idx,
-                        node_idx,
-                        self.placement.node_id(*node_idx),
-                        seg.payload.split(',').next().unwrap_or(""),
-                        seg.traj_id,
-                        seg.lat,
-                        seg.lon,
-                        seg.payload.split(',').nth(4).unwrap_or( &seg.ts.to_string() )
-                    )?;
+                // 写逐条命中（with_nodes）
+                if save_with_nodes {
+                    wtr_hits.write_record(&[
+                        ri.to_string(),
+                        node_idx.to_string(),
+                        self.net.node_ids[node_idx].to_string(),
+                        seg.sfc_key.to_string(),
+                        seg.traj_id.to_string(),
+                        seg.segment_id.to_string(),
+                        seg.ts.to_string(),
+                        format!("{}", seg.lat),
+                        format!("{}", seg.lon),
+                        route_hops.to_string(),
+                        node_visits.to_string(),
+                    ])?;
+                }
+
+                // ✅ 写真实业务结果
+                let user_str = seg.user.clone();
+                wtr_results.write_record(&[
+                    user_str,
+                    seg.traj_id.to_string(),
+                    format!("{}", seg.lat),
+                    format!("{}", seg.lon),
+                    ts_to_rfc3339(seg.ts),
+                ])?;
+
+                this_range_written += 1;
+            }
+
+            // 记录该区间的聚合统计
+            range_stats.push(RangeStat {
+                start: s,
+                end: e,
+                route_hops,
+                node_visits,
+                hits: this_range_written,
+            });
+
+            // 控制台打印（最多打印前 PRINT_RANGE_LIMIT 条）
+            if printed < PRINT_RANGE_LIMIT {
+                println!(
+                    "  Range[{:<3}] [{}, {}] -> {} segments ({} hops, {} nodes)",
+                    ri, s, e, this_range_written, route_hops, node_visits
+                );
+                printed += 1;
+
+                if printed == PRINT_RANGE_LIMIT && suppress_after > 0 {
+                    println!("  ... (suppressed {} more range logs)", suppress_after);
                 }
             }
-
-            // Print and log range statistics
-            if idx < self.print_first {
-                println!(
-                    "  Range[{:>3}] [{}, {}] -> {} segments ({} hops)",
-                    idx, s, e, just_hits.len(), hops
-                );
-            }
-            writeln!(fh, "{},{},{},{},{}", idx, s, e, just_hits.len(), hops)?;
-
-            // dump results (5 columns)
-            for seg in just_hits {
-                writeln!(rf, "{}", seg.payload)?;
-            }
-
-            // Node cover
-            if let Some(ref mut fc) = fcover {
-                writeln!(fc, "{},{}", idx, touched_nodes.len())?;
-            }
-
-            // Invalid node visits: touched nodes that do not intersect [s,e]
-            let mut invalid_node_visits = 0usize;
-            for &ni in &touched_nodes {
-                let (ns, ne, _wrapped) = self.placement.node_responsible_interval(ni);
-                if e < ns || ne < s { invalid_node_visits += 1; }
-            }
-            total_invalid_visits += invalid_node_visits;
-            // Append invalid visits to summary range stats file (optional)
-            // (We keep ranges_and_hits.csv format stable; invalid visits go to summary.txt below)
-
-            cover_counts.push(touched_nodes.len());
         }
 
-        if plan.ranges_merged.len() > self.print_first {
-            println!(
-                "  ... (suppressed {} more range logs)",
-                plan.ranges_merged.len() - self.print_first
-            );
-        }
+        // flush 逐条命中 与 业务结果
+        wtr_hits.flush()?;
+        wtr_results.flush()?;
 
-        // ========== summary.txt (right here!) ==========
+        // 写新增的按区间聚合文件：ranges_and_hits.csv
         {
-            let mut sf = File::create(qdir.join("summary.txt"))?;
-            writeln!(sf, "raw_ranges        : {}", plan.ranges_raw.len())?;
-            writeln!(sf, "merged_ranges     : {}", plan.ranges_merged.len())?;
-            writeln!(sf, "hits_with_overlap : {}", total_hits_with_overlap)?;
-            writeln!(sf, "unique_hits       : {}", uniq.len())?;
-
-            // hops
-            writeln!(sf, "total_hops        : {}", total_hops)?;
-            let avg_hops = if plan.ranges_merged.is_empty() {
-                0.0
-            } else {
-                total_hops as f64 / (plan.ranges_merged.len() as f64)
-            };
-            writeln!(sf, "avg_hops          : {:.2}", avg_hops)?;
-
-            // cover percentiles
-            if !cover_counts.is_empty() {
-                let mean = {
-                    let s: usize = cover_counts.iter().sum();
-                    s as f64 / cover_counts.len() as f64
-                };
-                let p95 = percentile(cover_counts.clone(), 95.0);
-                let p99 = percentile(cover_counts.clone(), 99.0);
-                let max = cover_counts.iter().copied().max().unwrap_or(0);
-                writeln!(sf, "node_cover_mean   : {:.2}", mean)?;
-                writeln!(sf, "node_cover_p95    : {:.2}", p95)?;
-                writeln!(sf, "node_cover_p99    : {:.2}", p99)?;
-                writeln!(sf, "node_cover_max    : {}", max)?;
-                writeln!(sf, "invalid_node_visits_total : {}", total_invalid_visits)?;
+            let mut w = WriterBuilder::new().from_path(&ranges_summary_path)?;
+            w.write_record(&["range_idx", "start", "end", "hits", "route_hops", "node_visits"])?;
+            for (ri, rs) in range_stats.iter().enumerate() {
+                w.write_record(&[
+                    ri.to_string(),
+                    rs.start.to_string(),
+                    rs.end.to_string(),
+                    rs.hits.to_string(),
+                    rs.route_hops.to_string(),
+                    rs.node_visits.to_string(),
+                ])?;
             }
+            w.flush()?;
         }
 
-        // Verification
-        let _ = self.verify_against_csv(&qdir, q);
-        Ok(())
+        // （可保留以兼容）ranges_node_cover.csv：从 range_stats 回写
+        {
+            let mut wtr_cover = WriterBuilder::new().from_path(&cover_csv_path)?;
+            wtr_cover.write_record(&["range_idx", "node_cover"])?;
+            for (ri, rs) in range_stats.iter().enumerate() {
+                wtr_cover.write_record(&[ri.to_string(), rs.node_visits.to_string()])?;
+            }
+            wtr_cover.flush()?;
+        }
+
+        // 汇总
+        let total_hits = uniq.len();
+        let avg_route_hops = if range_stats.is_empty() {
+            0.0
+        } else {
+            (range_stats.iter().map(|r| r.route_hops).sum::<usize>() as f64)
+                / (range_stats.len() as f64)
+        };
+        let avg_node_cover = if range_stats.is_empty() {
+            0.0
+        } else {
+            (range_stats.iter().map(|r| r.node_visits).sum::<usize>() as f64)
+                / (range_stats.len() as f64)
+        };
+
+        // 写 summary.txt
+        {
+            let mut f = BufWriter::new(File::create(&summary_path)?);
+            writeln!(&mut f, "Query: #{} {}", qi, name)?;
+            writeln!(&mut f, "Total precise hits: {}", total_hits)?;
+            writeln!(&mut f, "Avg route hops: {:.3}", avg_route_hops)?;
+            writeln!(&mut f, "Avg node cover: {:.3}", avg_node_cover)?;
+            writeln!(
+                &mut f,
+                "Ranges (merged): {} (raw: {})",
+                ranges_merged.len(),
+                raw_ranges_len
+            )?;
+        }
+
+        Ok((total_hits, avg_route_hops, avg_node_cover))
     }
+}
 
-    /// Verify: count points in original CSV within window and compare with returned points
-    fn verify_against_csv(&self, qdir: &std::path::Path, q: &crate::config::QueryWindow) -> std::io::Result<()> {
-        use std::io::BufRead;
-        let res_file = std::fs::File::open(qdir.join("query_results.csv"))?;
-        let returned = std::io::BufReader::new(res_file).lines().skip(1).count();
+/// 精确过滤：在 SFC 候选上二次判定是否真的落在空间 + 时间窗口内。
+#[inline]
+fn inside_window(seg: &Segment, q: &QueryWindow, t_start: u64, t_end: u64) -> bool {
+    // 空间（闭区间）
+    if !(seg.lat >= q.lat_min && seg.lat <= q.lat_max) {
+        return false;
+    }
+    if !(seg.lon >= q.lon_min && seg.lon <= q.lon_max) {
+        return false;
+    }
+    // 时间（闭区间）
+    if !(seg.ts >= t_start && seg.ts <= t_end) {
+        return false;
+    }
+    true
+}
 
-        // Count truth from original CSV
-        let mut truth = 0usize;
-        let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_path(&self.cfg.data.csv_path)?;
-        let t0 = parse_time_str(&q.t_start);
-        let t1 = parse_time_str(&q.t_end);
-        for rec in rdr.records() {
-            let r = rec?;
-            let lat: f64 = r.get(2).unwrap_or("").parse().unwrap_or(f64::NAN);
-            let lon: f64 = r.get(3).unwrap_or("").parse().unwrap_or(f64::NAN);
-            let ts:  u64 = parse_time_str(r.get(4).unwrap_or(""));
-            if lat>=q.lat_min && lat<=q.lat_max && lon>=q.lon_min && lon<=q.lon_max && ts>=t0 && ts<=t1 {
-                truth += 1;
-            }
-        }
-        let mut vf = std::fs::File::create(qdir.join("verification.txt"))?;
-        use std::io::Write;
-        writeln!(vf, "truth_points_in_csv={}", truth)?;
-        writeln!(vf, "returned_points={}", returned)?;
-        writeln!(vf, "match={}", (truth == returned))?;
-        Ok(())
+/// 秒 → RFC3339（UTC）
+/// 使用新 API：DateTime::<Utc>::from_timestamp
+#[inline]
+fn ts_to_rfc3339(ts: u64) -> String {
+    match DateTime::<Utc>::from_timestamp(ts as i64, 0) {
+        Some(dt) => dt.to_rfc3339(),
+        None => ts.to_string(),
     }
 }

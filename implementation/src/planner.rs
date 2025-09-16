@@ -1,6 +1,14 @@
 use crate::config::{Config, QueryWindow};
-use crate::sfc::{SfcParams, build_sfc_params as sfc_build_params, ranges_for_window, encode_point};
 use std::f64::consts::PI;
+use crate::sfc::{
+    build_sfc_params,
+    ranges_for_window, 
+    encode_point,       
+    merge_ranges,
+    SfcParams,
+};
+
+
 
 /// Result structure
 #[derive(Debug, Clone)]
@@ -8,6 +16,8 @@ pub struct PlanResult {
     pub sfc_params: SfcParams,
     pub ranges_raw: Vec<(u64, u64)>,
     pub ranges_merged: Vec<(u64, u64)>,
+    pub t_start_s: u64,
+    pub t_end_s: u64,
 }
 
 /// Convert string/integer time to UTC seconds
@@ -67,51 +77,86 @@ fn inject_anchor_buckets_with_tailbits(
 
 /// Provide external SFC parameter construction (delegated to sfc.rs)
 pub fn build_params(cfg: &Config) -> SfcParams {
-    sfc_build_params(cfg)
+    build_sfc_params(cfg)
 }
 
-/// Plan window: round the upper bound and add 5 anchor points (center + four corners)
-pub fn plan_window(cfg: &Config, p: &SfcParams, q: &QueryWindow) -> PlanResult {
-    // 1) Parse time and adjust for closed right interval
-    let t_start = parse_ts_to_epoch_s(&q.t_start)
-        .unwrap_or_else(|| panic!("bad t_start: {}", q.t_start));
-    let t_end_raw = parse_ts_to_epoch_s(&q.t_end)
-        .unwrap_or_else(|| panic!("bad t_end: {}", q.t_end));
-    // Time precision comes from cfg.sfc (consistent with encoding precision)
-    let t_prec = cfg.sfc.t_precision_s.max(1);
-    let t_end = t_end_raw.saturating_add((t_prec - 1) as u64); // closed right interval
+/// 约束注入：将锚点桶与已合并区间求交后再合并，避免引入与窗口无关的大桶。
+fn constrained_inject(
+    merged: &[(u64, u64)],
+    anchor_buckets: &[(u64, u64)],
+) -> Vec<(u64, u64)> {
+    let mut out = merged.to_vec();
+    for &(bs, be) in anchor_buckets {
+        for &(rs, re) in merged.iter() {
+            let is = rs.max(bs);
+            let ie = re.min(be);
+            if is <= ie {
+                out.push((is, ie));
+            }
+        }
+    }
+    merge_ranges(out)
+}
 
-    // 2) Expand upper bound of latitude and longitude by half a cell (equivalent to ceil()-1)
-    let lat_c = (q.lat_min + q.lat_max) * 0.5;
-    let half_cell_lat = meters_to_deg_lat(cfg.sfc.y_precision_m.max(1e-6)) * 0.5;
-    let half_cell_lon = meters_to_deg_lon(cfg.sfc.x_precision_m.max(1e-6), lat_c) * 0.5;
+fn build_anchor_points(q: &QueryWindow) -> Vec<(f64, f64)> {
+    let lat_c = 0.5 * (q.lat_min + q.lat_max);
+    let lon_c = 0.5 * (q.lon_min + q.lon_max);
+    vec![
+        (lat_c, lon_c),           // 中心
+        (q.lat_min, q.lon_min),   // 四角
+        (q.lat_min, q.lon_max),
+        (q.lat_max, q.lon_min),
+        (q.lat_max, q.lon_max),
+    ]
+}
 
-    let lat_min = q.lat_min;
-    let lon_min = q.lon_min;
-    let lat_max = (q.lat_max + half_cell_lat).min(90.0);
-    let lon_max = (q.lon_max + half_cell_lon).min(180.0);
 
-    // 3) Generate intervals using the original algorithm and merge once
-    let ranges_raw = ranges_for_window(p, lat_min, lat_max, lon_min, lon_max, t_start, t_end);
-    let mut ranges_merged = merge_ranges_with_gap(ranges_raw.clone(), cfg.experiment.merge_gap_keys as u64);
+pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
+    // 1) 构建 SFC 参数（注意：build_sfc_params(&Config)）
+    let p = build_sfc_params(cfg);
 
-    // 4) Inject 5 anchor points (center + four corners)
-    let t_mid = ((t_start as u128 + t_end as u128) / 2) as u64;
-    let anchors = [
-        encode_point(p, (lat_min + lat_max) * 0.5, (lon_min + lon_max) * 0.5, t_mid),
-        encode_point(p, lat_min, lon_min, t_start),
-        encode_point(p, lat_min, lon_max, t_start),
-        encode_point(p, lat_max, lon_min, t_end),
-        encode_point(p, lat_max, lon_max, t_end),
-    ];
-    ranges_merged = inject_anchor_buckets_with_tailbits(
-        cfg.experiment.stop_tail_bits as u8,       // Align with node bucket bits
-        ranges_merged,
-        &anchors,
-        cfg.experiment.merge_gap_keys as u64,
+    // 2) 解析时间（如果你已有 parse_ts_to_epoch_s，就用现成的）
+    //    若函数名不同，请替换为你的解析函数。这里用 p.gtime.* 做边界兜底。
+    let t_start_s = crate::planner::parse_ts_to_epoch_s(&q.t_start).unwrap_or(p.gtime.0);
+    let t_end_s   = crate::planner::parse_ts_to_epoch_s(&q.t_end).unwrap_or(p.gtime.1);
+
+    // 3) 常规 SFC 覆盖（原始区间）
+    let ranges_raw = ranges_for_window(
+        &p,
+        q.lat_min, q.lat_max,
+        q.lon_min, q.lon_max,
+        t_start_s, t_end_s,
     );
 
-    // 5) Limit max ranges (experiment takes precedence, otherwise use upper bound from SFC parameters)
+    // 4) 常规合并
+    let mut ranges_merged = merge_ranges(ranges_raw.clone());
+
+    // 5) 约束注入法
+    let stop_tail_bits: u8 = cfg.experiment.stop_tail_bits; // 你的字段是 u8（从报错判断）
+    if stop_tail_bits > 0 {
+        let anchors = build_anchor_points(q);
+        let span: u64 = if stop_tail_bits >= 63 { u64::MAX } else { (1u64 << stop_tail_bits) - 1 };
+
+        // 选用时间维的中位数生成锚点 key（也可用 t_start_s）
+        let t_mid = if t_end_s >= t_start_s {
+            t_start_s + (t_end_s - t_start_s) / 2
+        } else {
+            t_start_s
+        };
+
+        let mut anchor_buckets: Vec<(u64, u64)> = Vec::with_capacity(anchors.len());
+        for (lat, lon) in anchors {
+            let key = encode_point(&p, lat, lon, t_mid);
+            let b_start = key & !span;
+            let b_end   = key |  span;
+            anchor_buckets.push((b_start, b_end));
+        }
+
+        // 核心：与已有 merged 的交集再合并
+        ranges_merged = constrained_inject(&ranges_merged, &anchor_buckets);
+    }
+
+    // 6) 软上限截断（如果你有 max_ranges 配置，可以在 cfg 或 p 上取）
     if let Some(maxr) = cfg.experiment.max_ranges.or(p.max_ranges) {
         if ranges_merged.len() > maxr {
             ranges_merged.truncate(maxr);
@@ -119,8 +164,12 @@ pub fn plan_window(cfg: &Config, p: &SfcParams, q: &QueryWindow) -> PlanResult {
     }
 
     PlanResult {
-        sfc_params: p.clone(),
+        sfc_params: p,
         ranges_raw,
         ranges_merged,
+        t_start_s,
+        t_end_s,
     }
 }
+
+
