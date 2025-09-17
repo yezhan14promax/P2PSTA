@@ -85,7 +85,6 @@ pub struct ExperimentConfig {
     pub debug: Option<bool>,
     pub placement: PlacementConfig,
     pub metrics: MetricsConfig,
-
     pub queries: Vec<QueryWindow>,
 }
 

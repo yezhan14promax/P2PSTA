@@ -34,7 +34,7 @@ experiment:
   merge_gap_keys: 127  # 2^k - 1,k=7 表示允许的最大 gap
   max_ranges: null    # 这里是实验的 max_ranges
   print_first: 15
-  debug: true 
+  debug: false 
 
   placement:
     mode: "baseline"       # 未来可切换 "vnode" | "smart_vnode"
