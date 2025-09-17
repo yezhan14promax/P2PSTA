@@ -82,7 +82,7 @@ pub struct ExperimentConfig {
     pub stop_tail_bits: u8,
     pub merge_gap_keys: usize,
     pub max_ranges: Option<usize>,
-
+    pub debug: Option<bool>,
     pub placement: PlacementConfig,
     pub metrics: MetricsConfig,
 

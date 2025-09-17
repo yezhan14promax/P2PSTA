@@ -113,12 +113,28 @@ pub(crate) fn q_f64(v: f64, mn: f64, mx: f64, L: u32) -> u32 {
 }
 
 #[inline]
+pub fn q_floor_f64(v: f64, mn: f64, mx: f64, L: u32) -> u32 {
+    if mx <= mn || L == 0 { return 0; }
+    let t = ((v - mn) / (mx - mn)).clamp(0.0, 1.0);
+    let n = ((1u64 << L) - 1) as f64;
+    (t * n).floor() as u32
+}
+
+#[inline]
 pub(crate) fn q_u64(v: u64, mn: u64, mx: u64, L: u32) -> u32 {
     if mx <= mn || L == 0 { return 0; }
     // Fix: Use saturating subtraction to prevent unsigned underflow panic when v < mn
     let t = (v.saturating_sub(mn) as f64 / (mx - mn) as f64).clamp(0.0, 1.0);
     let n = ((1u64 << L) - 1) as f64;
     (t * n).round() as u32
+}
+
+#[inline]
+pub fn q_floor_u64(v: u64, mn: u64, mx: u64, L: u32) -> u32 {
+    if mx <= mn || L == 0 { return 0; }
+    let t = (v.saturating_sub(mn) as f64 / (mx - mn) as f64).clamp(0.0, 1.0);
+    let n = ((1u64 << L) - 1) as f64;
+    (t * n).floor() as u32
 }
 
 // ===================== Morton / Hilbert Utilities =====================
@@ -252,6 +268,7 @@ fn shrink_xy_to_limit(b:&mut Bits3, limit:u32){
 // ===================== Submodule Declarations (located in src/sfc/) ===
 
 mod z3;
+pub use self::z3::encode_point_z3;
 mod z2t;
 mod h3;
 mod h2t;

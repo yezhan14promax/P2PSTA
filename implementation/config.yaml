@@ -27,13 +27,14 @@ experiment:
   # 这里保留一份口径，用于 window.txt 展示与 planner 的 gap/max_ranges 等控制
   algorithm: "z3"
   center_lat: 39.9
-  x_precision_m: 100
-  y_precision_m: 100
-  t_precision_s: 600
+  x_precision_m: 200
+  y_precision_m: 200
+  t_precision_s: 1200
   stop_tail_bits: 6
   merge_gap_keys: 127  # 2^k - 1,k=7 表示允许的最大 gap
-  max_ranges: 512    # 这里是实验的 max_ranges
+  max_ranges: null    # 这里是实验的 max_ranges
   print_first: 15
+  debug: true 
 
   placement:
     mode: "baseline"       # 未来可切换 "vnode" | "smart_vnode"

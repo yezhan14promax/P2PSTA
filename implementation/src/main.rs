@@ -17,7 +17,13 @@ fn main() {
 
     println!("CWD = {}", std::env::current_dir().unwrap().display());
     println!("Using config: {}", cfg_path);
-
     let cfg = config::Config::from_yaml(&cfg_path);
+    if cfg.experiment.debug.unwrap_or(false) {
+    println!(">>> [debug] YAML debug mode is ON");
+}   else {
+    println!(">>> [debug] YAML debug mode is OFF");
+}
+   
     experiment::run_experiment(&cfg);
+
 }
