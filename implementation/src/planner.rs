@@ -269,28 +269,22 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
         ranges_merged = merged2;
     }
 
-    // 7) 软上限截断
-    if debug_enabled(cfg) {
-        println!(">>> [probe] before cap: raw={} merged={}", ranges_raw.len(), ranges_merged.len());
-    }
-    if let Some(maxr) = cfg.experiment.max_ranges.or(p.max_ranges) {
-        if ranges_merged.len() > maxr {
-            if debug_enabled(cfg) {
-                println!(">>> [probe] TRUNCATING ranges_merged from {} to {}", ranges_merged.len(), maxr);
-            }
-            ranges_merged.truncate(maxr);
-        }
-    }
+    // // 7) 软上限截断
+    // if debug_enabled(cfg) {
+    //     println!(">>> [probe] before cap: raw={} merged={}", ranges_raw.len(), ranges_merged.len());
+    // }
+    // if let Some(maxr) = cfg.experiment.max_ranges.or(p.max_ranges) {
+    //     if ranges_merged.len() > maxr {
+    //         if debug_enabled(cfg) {
+    //             println!(">>> [probe] TRUNCATING ranges_merged from {} to {}", ranges_merged.len(), maxr);
+    //         }
+    //         ranges_merged.truncate(maxr);
+    //     }
+    // }
 
-    if let Some(maxr) = cfg.experiment.max_ranges.or(p.max_ranges) {
-        if ranges_merged.len() > maxr {
-            ranges_merged.truncate(maxr);
-        }
-    }
-
-    if debug_enabled(cfg) {
-        println!(">>> [probe] after  cap: merged={}", ranges_merged.len());
-    }
+    // if debug_enabled(cfg) {
+    //     println!(">>> [probe] after  cap: merged={}", ranges_merged.len());
+    // }
 
     // （可选）超大区间防御
     // let total_bits = (p.bits.lx + p.bits.ly + p.bits.lt).min(63);

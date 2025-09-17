@@ -11,7 +11,7 @@ sfc:
   y_precision_m: 100  # sfc区块精度，纬度10米
   t_precision_s: 600 # sfc区块精度，时间60秒
   time_bucket_s: 60  #供z2t/h2t使用，z3/h3忽略
-  max_ranges: 1024
+  max_ranges: 64 # null 表示不限制
 
 data:
   csv_path: "geolife_clean.csv"
@@ -21,18 +21,17 @@ output:
   result_dir: "results"
 
 network:
-  num_nodes: 64
+  num_nodes: 1024
 
 experiment:
   # 这里保留一份口径，用于 window.txt 展示与 planner 的 gap/max_ranges 等控制
   algorithm: "z3"
   center_lat: 39.9
-  x_precision_m: 200
-  y_precision_m: 200
-  t_precision_s: 1200
-  stop_tail_bits: 6
-  merge_gap_keys: 127  # 2^k - 1,k=7 表示允许的最大 gap
-  max_ranges: null    # 这里是实验的 max_ranges
+  x_precision_m: 100
+  y_precision_m: 100
+  t_precision_s: 600
+  stop_tail_bits: 12  # 2^k,k=10 表示最小区块边长
+  merge_gap_keys: 4095 # 2^k-1,k=12 表示最大 gap
   print_first: 15
   debug: false 
 
