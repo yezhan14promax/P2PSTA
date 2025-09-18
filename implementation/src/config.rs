@@ -80,12 +80,13 @@ pub struct ExperimentConfig {
     pub y_precision_m: f64,
     pub t_precision_s: u64,
     pub stop_tail_bits: u8,
-    pub merge_gap_keys: usize,
+    pub merge_gap_keys: u64,
     pub max_ranges: Option<usize>,
     pub debug: Option<bool>,
     pub placement: PlacementConfig,
     pub metrics: MetricsConfig,
     pub queries: Vec<QueryWindow>,
+    pub prefix_bits: Option<u32>, 
 }
 
 #[derive(Debug, Deserialize)]

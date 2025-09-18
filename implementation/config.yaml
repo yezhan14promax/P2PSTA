@@ -10,8 +10,8 @@ sfc:
   x_precision_m: 100  # sfc区块精度，经度10米
   y_precision_m: 100  # sfc区块精度，纬度10米
   t_precision_s: 600 # sfc区块精度，时间60秒
-  time_bucket_s: 60  #供z2t/h2t使用，z3/h3忽略
-  max_ranges: 64 # null 表示不限制
+  time_bucket_s: 604800 # day：86400 , week：604800 , month：2592000
+  max_ranges: null # null 表示不限制
 
 data:
   csv_path: "geolife_clean.csv"
@@ -30,20 +30,22 @@ experiment:
   x_precision_m: 100
   y_precision_m: 100
   t_precision_s: 600
-  stop_tail_bits: 12  # 2^k,k=10 表示最小区块边长
-  merge_gap_keys: 4095 # 2^k-1,k=12 表示最大 gap
+  stop_tail_bits:   # 表示最小区块边长
+  merge_gap_keys: 4095 # 2^k-1,k=17 表示最大 gap
   print_first: 15
-  debug: false 
+  max_ranges: null
+  debug: false
+  prefix_bits: 18  
 
   placement:
     mode: "baseline"       # 未来可切换 "vnode" | "smart_vnode"
-    per_node: 8
-    vnode_bits: 9
+    per_node: null
+    vnode_bits: null
     smart:
-      hot_prefix_top_k: 0.1
-      split_factor_bits: 1
-      rebalance_cooldown_s: 300
-      co_placement_jaccard: 0.4
+      hot_prefix_top_k: null
+      split_factor_bits: null
+      rebalance_cooldown_s: null
+      co_placement_jaccard: null
 
   metrics:
     compute_node_cover: true

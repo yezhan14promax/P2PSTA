@@ -210,7 +210,7 @@ impl Network {
         (hits, hops.max(1))
     }
 
-    /// 区间查询（返回节点上下文）：( (node_idx, &Segment) 列表, 跳数, 命中节点集合 )
+    /// 区间查询（返回节点上下文）：( (pnode_idx, &Segment) 列表, 跳数, 命中节点集合 )
     pub fn query_range_with_nodes(
         &self,
         entry_node: usize,
@@ -348,7 +348,7 @@ impl Network {
 
 
     /// 导出节点负责区间 + 存储数据范围（用于核对）
-    /// (node_idx, node_id, resp_start, resp_end, wrapped, stored_total, stored_min, stored_max)
+    /// (pnode_idx, node_id, resp_start, resp_end, wrapped, stored_total, stored_min, stored_max)
     pub fn export_node_ranges(&self) -> Vec<(usize, u64, u64, u64, bool, usize, Option<u64>, Option<u64>)> {
         let mut rows = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {

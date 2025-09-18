@@ -129,6 +129,171 @@ pub struct PlanResult {
     pub t_end_s: u64,
 }
 
+/// 把 [t_start, t_end) 切成等长的时间桶（每桶秒数 = bin_secs）
+fn time_bins(t_start: u64, t_end: u64, bin_secs: u64) -> Vec<(u64,u64)> {
+    let mut out = Vec::new();
+    if t_end <= t_start || bin_secs == 0 { return out; }
+    let mut s = t_start / bin_secs * bin_secs;
+    while s < t_end {
+        let e  = s.saturating_add(bin_secs);
+        let lo = s.max(t_start);
+        let hi = e.min(t_end);
+        if hi > lo { out.push((lo, hi)); }
+        s = e;
+    }
+    out
+}
+
+#[inline]
+fn sample_uniform(v:&[(u64,u64)], cap:usize) -> Vec<(u64,u64)> {
+    if cap == 0 || v.is_empty() { return Vec::new(); }
+    if v.len() <= cap { return v.to_vec(); }
+    let n = v.len();
+    let mut out = Vec::with_capacity(cap);
+    for i in 0..cap {
+        let idx = (i as u128 * n as u128 / cap as u128) as usize;
+        out.push(v[idx]);
+    }
+    out
+}
+
+/// 前缀抬升（自举抬升）：若某区间恰好是完整前缀（start 对齐，end = start | ((1<<rem)-1)），可逐层抬升。
+fn prefix_lift_inplace(ranges: &mut Vec<(u64,u64)>, bits: crate::sfc::Bits3) {
+    if ranges.is_empty() { return; }
+    let _total = (bits.lx + bits.ly + bits.lt).min(63);
+    for r in ranges.iter_mut() {
+        let (mut s, mut e) = *r;
+        loop {
+            let x = s ^ e;
+            if x == 0 { break; }
+            // rem = 低位连续的 1 的数量，使 s..e = 某前缀的完整覆盖
+            let rem = x.trailing_ones();
+            if rem == 0 { break; }
+            let mask_low = (1u64 << rem) - 1;
+            if (s & mask_low) != 0 { break; }
+            // 只有左子（上一位为 0）才可与兄弟拼父
+            let parent_bit = 1u64 << rem;
+            if (s & parent_bit) != 0 { break; }
+            // 抬升一位：清掉 parent_bit 和低 rem 位，e 把它们全置 1
+            s &= !(parent_bit | mask_low);
+            e |=  parent_bit | mask_low;
+            // 继续尝试更高一层
+        }
+        *r = (s, e);
+    }
+    // 抬升后再合并
+    *ranges = merge_ranges(std::mem::take(ranges));
+}
+
+/// 最终预算：按“时间桶”均衡抽样（每桶均匀留样），避免偏置到某一键段或时段
+fn truncate_by_time_bucket_uniform(
+    ranges_per_bin: &mut Vec<Vec<(u64,u64)>>,
+    cap: usize,
+) -> Vec<(u64,u64)> {
+    if cap == 0 {
+        return Vec::new();
+    }
+    let bins = ranges_per_bin.len();
+    if bins == 0 {
+        return Vec::new();
+    }
+    let mut picked = Vec::with_capacity(cap);
+    let per = (cap + bins - 1) / bins; // 向上取整
+    for v in ranges_per_bin.iter_mut() {
+        if picked.len() >= cap { break; }
+        if v.is_empty() { continue; }
+        if v.len() <= per {
+            picked.extend(v.drain(..));
+        } else {
+            let n = v.len();
+            for i in 0..per {
+                if picked.len() >= cap { break; }
+                let idx = (i as u128 * n as u128 / per as u128) as usize;
+                picked.push(v[idx]);
+            }
+        }
+    }
+    // 若仍超过 cap（最后一桶溢出），整体再均匀抽一次
+    if picked.len() > cap {
+        let n = picked.len();
+        let mut shrunk = Vec::with_capacity(cap);
+        for i in 0..cap {
+            let idx = (i as u128 * n as u128 / cap as u128) as usize;
+            shrunk.push(picked[idx]);
+        }
+        return shrunk;
+    }
+    picked
+}
+
+
+
+/// 计算给定高位前缀 bucket 的键空间边界 [lo, hi]
+#[inline]
+fn bucket_bounds(prefix: u64, p: u32, total_bits: u32) -> (u64, u64) {
+    let p = p.min(total_bits);
+    let shift = total_bits - p;
+    let lo = if shift >= 64 { 0 } else { prefix << shift };
+    let hi = if shift >= 64 { u64::MAX } else { lo | ((1u64 << shift).saturating_sub(1)) };
+    (lo, hi)
+}
+
+/// 位前缀归并：把所有区间按高位前缀（长度 p）分桶；
+/// 同一桶内的片段并成一个 [min, max]，确保“不过度收缩”=> 不会漏真阳性。
+fn prefix_bucket_merge(
+    ranges: &[(u64,u64)],
+    p: u32,
+    total_bits: u32,
+) -> Vec<(u64,u64)> {
+    use std::cmp::{min, max};
+    use std::collections::HashMap;
+
+    if ranges.is_empty() { return Vec::new(); }
+
+    let p = p.min(total_bits);
+    let shift = total_bits - p;
+
+    // 每个桶记录该桶内出现的最小起点和最大终点
+    let mut buckets: HashMap<u64, (u64,u64)> = HashMap::new();
+
+    for &(a, b) in ranges {
+        if a > b { continue; }
+        if p == 0 {
+            // 只有一个桶（全域）
+            let e = buckets.entry(0).or_insert((a, b));
+            e.0 = min(e.0, a);
+            e.1 = max(e.1, b);
+            continue;
+        }
+
+        let k0 = if shift >= 64 { 0 } else { a >> shift };
+        let k1 = if shift >= 64 { 0 } else { b >> shift };
+
+        for k in k0..=k1 {
+            let (blo, bhi) = bucket_bounds(k, p, total_bits);
+            // 与该桶边界相交的片段（注意：我们不会把片段缩小到更小的范围，
+            // 这里取 [a,b] 与桶的交集只是为了投放到正确的桶，
+            // 最后同桶内用 [min,max] 整段覆盖，不会漏）
+            let seg_lo = a.max(blo);
+            let seg_hi = b.min(bhi);
+            if seg_lo > seg_hi { continue; }
+
+            let e = buckets.entry(k).or_insert((seg_lo, seg_hi));
+            e.0 = min(e.0, seg_lo);
+            e.1 = max(e.1, seg_hi);
+        }
+    }
+
+    // 输出为按起点排序的列表
+    let mut out: Vec<(u64,u64)> = buckets.into_iter().map(|(_k, v)| v).collect();
+    out.sort_unstable_by(|x, y| x.0.cmp(&y.0));
+
+    // 可选：相邻桶可能连成更大段，这里再合并一次，进一步降碎片
+    merge_ranges(out)
+}
+
+
+
 /// Convert string/integer time to UTC seconds
 fn parse_ts_to_epoch_s(ts_str: &str) -> Option<u64> {
     if let Ok(v) = ts_str.trim().parse::<i64>() { return Some(v.max(0) as u64); }
@@ -233,7 +398,7 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
     let t_lo  = t_start_s.saturating_sub(bin_w);
     let t_hi  = t_end_s.saturating_add(bin_w).saturating_sub(1);
 
-    // 4) 生成原始覆盖
+    // 4) 生成原始覆盖（一次性跑 z3；不再做时间分桶）
     let ranges_raw = ranges_for_window(
         &p,
         q.lat_min, q.lat_max,
@@ -241,12 +406,17 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
         t_lo, t_hi,
     );
 
-    // 5) 初次合并
+    // 5) 初次合并（可换成带 gap 的版本）
     let mut ranges_merged = merge_ranges(ranges_raw.clone());
-    // 如你已有带 gap 的合并，这里可换成：
     // let mut ranges_merged = merge_ranges_with_gap(ranges_raw.clone(), cfg.experiment.merge_gap_keys);
 
-    // 6) 时间边界锚点注入（t_start 与 t_end-ε），与已有 merged 求交后再合并
+    // 6) 位前缀归并（核心）：按高位前缀长度 p_bits 进行分桶归并
+    let total_bits: u32 = (p.bits.lx + p.bits.ly + p.bits.lt).min(63);
+    // 从配置读取前缀长度（位数），没有就给一个温和默认，比如 18
+    let p_bits: u32 = cfg.experiment.prefix_bits.unwrap_or(18).min(total_bits);
+    ranges_merged = prefix_bucket_merge(&ranges_merged, p_bits, total_bits);
+
+    // 7)（可选）时间边界锚点注入 —— 采用“并集”方式兜底；绝不做相交
     let stop_tail_bits: u8 = cfg.experiment.stop_tail_bits;
     if stop_tail_bits > 0 {
         let anchors = build_anchor_points(q); // 中心+四角
@@ -264,32 +434,11 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
             }
         }
 
-        let merged2 = constrained_inject(&ranges_merged, &edge_buckets);
-        let merged2 = merge_ranges(merged2); // 或 merge_ranges_with_gap(merged2, cfg.experiment.merge_gap_keys);
-        ranges_merged = merged2;
+        // 并集注入，不裁剪
+        let mut injected = ranges_merged.clone();
+        injected.extend(edge_buckets.into_iter());
+        ranges_merged = merge_ranges(injected);
     }
-
-    // // 7) 软上限截断
-    // if debug_enabled(cfg) {
-    //     println!(">>> [probe] before cap: raw={} merged={}", ranges_raw.len(), ranges_merged.len());
-    // }
-    // if let Some(maxr) = cfg.experiment.max_ranges.or(p.max_ranges) {
-    //     if ranges_merged.len() > maxr {
-    //         if debug_enabled(cfg) {
-    //             println!(">>> [probe] TRUNCATING ranges_merged from {} to {}", ranges_merged.len(), maxr);
-    //         }
-    //         ranges_merged.truncate(maxr);
-    //     }
-    // }
-
-    // if debug_enabled(cfg) {
-    //     println!(">>> [probe] after  cap: merged={}", ranges_merged.len());
-    // }
-
-    // （可选）超大区间防御
-    // let total_bits = (p.bits.lx + p.bits.ly + p.bits.lt).min(63);
-    // let max_span   = (1u64 << total_bits) / 4;
-    // ranges_merged.retain(|&(s,e)| e >= s && (e - s + 1) <= max_span);
 
     //debug start
     // === 探针：时间边界覆盖（t_start / t_end-ε） ===
@@ -349,7 +498,7 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
         );
     }
 
-
+    // —— 保持你原有的返回字段（包括 ranges_raw）——
     PlanResult {
         sfc_params: p,
         ranges_raw,
@@ -357,7 +506,8 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
         t_start_s,
         t_end_s,
     }
-
 }
+
+
 
 

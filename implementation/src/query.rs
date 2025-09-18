@@ -130,7 +130,7 @@ impl<'a> QueryExecutor<'a> {
         if save_with_nodes {
             wtr_hits.write_record(&[
                 "range_idx",
-                "node_idx",
+                "pnode_idx",
                 "node_id",
                 "sfc_key",
                 "traj_id",
@@ -169,7 +169,7 @@ impl<'a> QueryExecutor<'a> {
             // 统计本区间最终写出的行数（通过过滤 + 去重之后）
             let mut this_range_written = 0usize;
 
-            for (node_idx, seg) in hits_nodes {
+            for (pnode_idx, seg) in hits_nodes {
                 // 精确过滤（如关闭 precise_hits，则跳过）
                 if precise_hits && !inside_window(seg, q, t_start_s, t_end_s) {
                     continue;
@@ -184,8 +184,8 @@ impl<'a> QueryExecutor<'a> {
                 if save_with_nodes {
                     wtr_hits.write_record(&[
                         ri.to_string(),
-                        node_idx.to_string(),
-                        self.net.node_ids[node_idx].to_string(),
+                        pnode_idx.to_string(),
+                        self.net.node_ids[pnode_idx].to_string(),
                         seg.sfc_key.to_string(),
                         seg.traj_id.to_string(),
                         seg.segment_id.to_string(),

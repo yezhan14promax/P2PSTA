@@ -1,7 +1,7 @@
 // 统一放置接口：Baseline / VNode / SmartVNode 都实现这个 Trait
 use crate::node::Segment;
 
-/// 节点分布行：(node_idx, node_id, total_count, min_key, max_key)
+/// 节点分布行：(pnode_idx, node_id, total_count, min_key, max_key)
 pub type NodeDistRow = (usize, u64, usize, Option<u64>, Option<u64>);
 
 pub trait Placement {

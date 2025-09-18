@@ -46,7 +46,7 @@ pub fn run_experiment(cfg: &Config) {
     {
         let rows = net.node_distribution_rows();
         let mut f = BufWriter::new(File::create(run_dir.join("node_distribution.csv")).expect("create node_distribution.csv"));
-        writeln!(f, "node_idx,node_id,total_count,min_key,max_key").ok();
+        writeln!(f, "pnode_idx,node_id,total_count,min_key,max_key").ok();
         for (idx, id, total, mn, mx) in rows {
             writeln!(
                 f,
@@ -68,7 +68,7 @@ pub fn run_experiment(cfg: &Config) {
         let mut f = BufWriter::new(
             File::create(run_dir.join("node_ranges.csv")).expect("create node_ranges.csv"),
         );
-        writeln!(f, "node_idx,node_id,resp_start,resp_end,wrapped,stored_total,stored_min,stored_max").ok();
+        writeln!(f, "pnode_idx,node_id,resp_start,resp_end,wrapped,stored_total,stored_min,stored_max").ok();
         for (i, id, rs, re, wrapped, total, mn, mx) in net.export_node_ranges() {
             writeln!(
                     f,
@@ -89,7 +89,7 @@ pub fn run_experiment(cfg: &Config) {
             File::create(run_dir.join("nodes_dump.csv")).expect("create nodes_dump.csv"),
         );
         // 统一表头：node_idx,node_id,key,user,traj_id,lat,lon,datetime
-        writeln!(ndump, "node_idx,node_id,key,user,traj_id,lat,lon,datetime").ok();
+        writeln!(ndump, "pnode_idx,node_id,key,user,traj_id,lat,lon,datetime").ok();
 
         for (i, id, _rs, _re, _wrapped, _total, _mn, _mx) in net.export_node_ranges() {
             for seg in net.export_node_data(i) {
@@ -105,7 +105,7 @@ pub fn run_experiment(cfg: &Config) {
                 writeln!(
                     ndump,
                     "{},{},{},{},{},{},{},{}",
-                    i,           // node_idx
+                    i,           // pnode_idx
                     id,          // node_id
                     seg.sfc_key,
                     user,
