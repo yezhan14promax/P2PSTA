@@ -28,149 +28,186 @@ pub fn ranges_for_window_z3(
     lo0 = lo0.clamp(p.glon.0,  p.glon.1);  lo1 = lo1.clamp(p.glon.0,  p.glon.1);
     ts0 = ts0.clamp(p.gtime.0, p.gtime.1); ts1 = ts1.clamp(p.gtime.0, p.gtime.1);
 
-    // 2) 连续→整型网格（闭区间：左 floor，右 ceil-1）
-    let (x0, x1) = q_range_f64(la0, la1, p.glat.0,  p.glat.1,  p.bits.lx);
-    let (y0, y1) = q_range_f64(lo0, lo1, p.glon.0,  p.glon.1,  p.bits.ly);
-    let (z0, z1) = q_range_u64(ts0, ts1, p.gtime.0, p.gtime.1, p.bits.lt);
+    // 2) 连续→离散（严格闭区间，避免右端掉格）
+    let (x0, x1) = q_range_f64_closed(la0, la1, p.glat.0,  p.glat.1,  p.bits.lx);
+    let (y0, y1) = q_range_f64_closed(lo0, lo1, p.glon.0,  p.glon.1,  p.bits.ly);
+    let (z0, z1) = q_range_u64_closed(ts0, ts1, p.gtime.0, p.gtime.1, p.bits.lt);
 
-    // 3) 递归覆盖（带上限）
+    let bits   = p.bits;
+    let total  = (bits.lx + bits.ly + bits.lt) as u32;
+    let maxb   = bits.lx.max(bits.ly).max(bits.lt);
+
     let mut out: Vec<(u64,u64)> = Vec::with_capacity(4096);
 
-    // —— 上限策略（不改对外接口；如果你以后想从 YAML 配，可把这些常量接到 SfcParams 或 Config 上）——
-    let total_bits = (p.bits.lx + p.bits.ly + p.bits.lt) as u32;
-    // 最深层数上限（相对 total_bits，保守取：到叶子前几层就允许粗接收）
-    let max_depth: u32 = total_bits.saturating_sub(8).max(8);
-    // 访问节点上限（防止极端窗口爆量；按经验 2~5 万就够用）
-    let max_nodes: usize = 50_000;
-    // “尾部剩余位”上限（低于该值即粗接收，避免尾部碎）
-    let tail_bits_guard: u32 = 12;
-
+    // 3) 递归 + 上限 + 粗接收（确保不漏）
     let mut visited: usize = 0;
-
-    cover_node_adaptive_capped(
-        p.bits,
-        x0,x1, y0,y1, z0,z1,
-        0,0,0, p.bits.lx, p.bits.ly, p.bits.lt,
-        /*depth*/ 0, max_depth,
-        &mut visited, max_nodes,
-        tail_bits_guard,
+    cover_by_bitplanes_capped(
+        bits, total,
+        x0, x1, y0, y1, z0, z1,
+        /*prefix*/ 0,
+        /*level */ maxb,
+        /*base  */ 0, 0, 0,
+        /*depth */ 0,
+        p.max_depth,
+        &mut visited,
+        p.max_nodes,
+        p.tail_bits_guard,
         &mut out,
     );
 
     merge_ranges(out)
 }
 
-// ====================== 内部：递归 + 自适应分裂 + 上限粗接收 ======================
-
+/// 统计“到该 level 还剩多少位没用”
 #[inline]
-fn cover_node_adaptive_capped(
-    bits: Bits3,
-    x0:u32, x1:u32, y0:u32, y1:u32, z0:u32, z1:u32,          // 目标盒（闭区间）
-    xb:u32, yb:u32, zb:u32, rx:u32, ry:u32, rz:u32,          // 当前节点（起点+剩余位）
-    depth:u32, max_depth:u32,
-    visited:&mut usize, max_nodes:usize,
+fn used_bits_at_level(bits: Bits3, level: u32) -> u32 {
+    // 与之前 count_used_bits 含义一致：已用高位 = (lx - level_clamped) + ...
+    let lx_used = bits.lx.saturating_sub(level.min(bits.lx));
+    let ly_used = bits.ly.saturating_sub(level.min(bits.ly));
+    let lt_used = bits.lt.saturating_sub(level.min(bits.lt));
+    lx_used + ly_used + lt_used
+}
+
+/// 位层递归（携带三轴 base），并加入：最大深度 / 最大节点数 / 尾部剩余位粗接收
+fn cover_by_bitplanes_capped(
+    bits: Bits3, total:u32,
+    x0:u32, x1:u32, y0:u32, y1:u32, z0:u32, z1:u32,
+    prefix:u64,
+    level:u32,
+    base_x:u64, base_y:u64, base_z:u64,
+    depth:u32,
+    max_depth:u32,
+    visited:&mut usize,
+    max_nodes:usize,
     tail_bits_guard:u32,
-    out:&mut Vec<(u64,u64)>,
+    out:&mut Vec<(u64,u64)>
 ){
+    // 访问计数 & 节点上限 → 粗接收兜底
     *visited += 1;
     if *visited >= max_nodes {
-        // 节点数到上限：粗接收，确保不漏
-        push_prefix_range(bits, xb,yb,zb, rx,ry,rz, out);
+        let used = used_bits_at_level(bits, level);
+        let rem  = total - used;
+        let start = prefix << rem;
+        let end   = start | ((1u64 << rem).saturating_sub(1));
+        out.push((start, end));
         return;
     }
 
-    let nx0 = xb;
-    let nx1 = xb + ((1u32 << rx).saturating_sub(1));
-    let ny0 = yb;
-    let ny1 = yb + ((1u32 << ry).saturating_sub(1));
-    let nz0 = zb;
-    let nz1 = zb + ((1u32 << rz).saturating_sub(1));
-
-    // 不相交
-    if nx1 < x0 || nx0 > x1 || ny1 < y0 || ny0 > y1 || nz1 < z0 || nz0 > z1 { return; }
-
-    // 完全包含：直接产出
-    if x0 <= nx0 && nx1 <= x1 && y0 <= ny0 && ny1 <= y1 && z0 <= nz0 && nz1 <= z1 {
-        push_prefix_range(bits, xb,yb,zb, rx,ry,rz, out);
+    // 深度上限 or 尾部剩余位过小 → 粗接收兜底（不漏真阳性）
+    let used = used_bits_at_level(bits, level);
+    let rem  = total - used;
+    if depth >= max_depth || rem <= tail_bits_guard {
+        let start = prefix << rem;
+        let end   = start | ((1u64 << rem).saturating_sub(1));
+        out.push((start, end));
         return;
     }
 
-    // —— 上限：深度到顶 或 “尾部剩余位很小” -> 粗接收，保证覆盖不漏
-    let rem_bits = rx + ry + rz;
-    if depth >= max_depth || rem_bits <= tail_bits_guard {
-        push_prefix_range(bits, xb,yb,zb, rx,ry,rz, out);
+    if level == 0 {
+        // 叶子：精确一个 key
+        out.push((prefix, prefix));
         return;
     }
 
-    // 叶
-    if rx==0 && ry==0 && rz==0 {
-        push_prefix_range(bits, xb,yb,zb, rx,ry,rz, out);
-        return;
-    }
+    // 本层三轴是否有位
+    let bx = bits.lx >= level;
+    let by = bits.ly >= level;
+    let bz = bits.lt >= level;
 
-    // 自适应选择分裂维（节点跨度/盒跨度 最大者；inside 的维降低权重）
-    let ndx = (1u32 << rx).max(1);
-    let ndy = (1u32 << ry).max(1);
-    let ndz = (1u32 << rz).max(1);
-    let bdx = (x1 - x0 + 1).max(1);
-    let bdy = (y1 - y0 + 1).max(1);
-    let bdz = (z1 - z0 + 1).max(1);
+    // 本层每轴块宽（按格）
+    let span_x = if bx { 1u64 << (level - 1) } else { 0 };
+    let span_y = if by { 1u64 << (level - 1) } else { 0 };
+    let span_z = if bz { 1u64 << (level - 1) } else { 0 };
 
-    let mut score_x = if rx > 0 { (ndx as f64) / (bdx as f64) } else { -1.0 };
-    let mut score_y = if ry > 0 { (ndy as f64) / (bdy as f64) } else { -1.0 };
-    let mut score_z = if rz > 0 { (ndz as f64) / (bdz as f64) } else { -1.0 };
+    // 下一层时已用位（inside 成段时要用 rem_next 扩展）
+    let used_next = used_bits_at_level(bits, level - 1);
+    let rem_next  = total - used_next;
 
-    if x0 <= nx0 && nx1 <= x1 { score_x *= 0.25; }
-    if y0 <= ny0 && ny1 <= y1 { score_y *= 0.25; }
-    if z0 <= nz0 && nz1 <= z1 { score_z *= 0.25; }
+    let mut child = 0u8;
+    while child < 8 {
+        let xbit = if bx { (child >> 2) & 1 } else { 0 };
+        let ybit = if by { (child >> 1) & 1 } else { 0 };
+        let zbit = if bz { (child >> 0) & 1 } else { 0 };
 
-    if score_x >= score_y && score_x >= score_z && rx > 0 {
-        let half = 1u32 << (rx - 1);
-        cover_node_adaptive_capped(bits, x0,x1, y0,y1, z0,z1, xb,         yb, zb, rx-1, ry,   rz,   depth+1, max_depth, visited, max_nodes, tail_bits_guard, out);
-        cover_node_adaptive_capped(bits, x0,x1, y0,y1, z0,z1, xb + half, yb, zb, rx-1, ry,   rz,   depth+1, max_depth, visited, max_nodes, tail_bits_guard, out);
-    } else if score_y >= score_x && score_y >= score_z && ry > 0 {
-        let half = 1u32 << (ry - 1);
-        cover_node_adaptive_capped(bits, x0,x1, y0,y1, z0,z1, xb, yb,         zb, rx,   ry-1, rz,   depth+1, max_depth, visited, max_nodes, tail_bits_guard, out);
-        cover_node_adaptive_capped(bits, x0,x1, y0,y1, z0,z1, xb, yb + half, zb, rx,   ry-1, rz,   depth+1, max_depth, visited, max_nodes, tail_bits_guard, out);
-    } else {
-        debug_assert!(rz > 0);
-        let half = 1u32 << (rz - 1);
-        cover_node_adaptive_capped(bits, x0,x1, y0,y1, z0,z1, xb, yb, zb,         rx,   ry,   rz-1, depth+1, max_depth, visited, max_nodes, tail_bits_guard, out);
-        cover_node_adaptive_capped(bits, x0,x1, y0,y1, z0,z1, xb, yb, zb + half, rx,   ry,   rz-1, depth+1, max_depth, visited, max_nodes, tail_bits_guard, out);
+        // base 递推
+        let cbx = if bx { base_x + (xbit as u64) * span_x } else { base_x };
+        let cby = if by { base_y + (ybit as u64) * span_y } else { base_y };
+        let cbz = if bz { base_z + (zbit as u64) * span_z } else { base_z };
+
+        // 子块闭区间
+        let nx0 = cbx;
+        let nx1 = if bx { cbx + span_x - 1 } else { cbx + ((1u64 << bits.lx) - 1) };
+        let ny0 = cby;
+        let ny1 = if by { cby + span_y - 1 } else { cby + ((1u64 << bits.ly) - 1) };
+        let nz0 = cbz;
+        let nz1 = if bz { cbz + span_z - 1 } else { cbz + ((1u64 << bits.lt) - 1) };
+
+        let inter = !(nx1 < x0 as u64 || nx0 > x1 as u64
+                   || ny1 < y0 as u64 || ny0 > y1 as u64
+                   || nz1 < z0 as u64 || nz0 > z1 as u64);
+
+        if inter {
+            // 追加本层位
+            let mut pref = prefix;
+            if bx { pref = (pref << 1) | (xbit as u64); }
+            if by { pref = (pref << 1) | (ybit as u64); }
+            if bz { pref = (pref << 1) | (zbit as u64); }
+
+            let inside = (x0 as u64) <= nx0 && nx1 <= (x1 as u64)
+                      && (y0 as u64) <= ny0 && ny1 <= (y1 as u64)
+                      && (z0 as u64) <= nz0 && nz1 <= (z1 as u64);
+
+            if inside {
+                // 整段前缀收下
+                let start = pref << rem_next;
+                let end   = start | ((1u64 << rem_next).saturating_sub(1));
+                out.push((start, end));
+            } else {
+                cover_by_bitplanes_capped(
+                    bits, total,
+                    x0, x1, y0, y1, z0, z1,
+                    pref,
+                    level - 1,
+                    cbx, cby, cbz,
+                    depth + 1,
+                    max_depth,
+                    visited,
+                    max_nodes,
+                    tail_bits_guard,
+                    out
+                );
+            }
+        }
+
+        child += 1;
     }
 }
 
-#[inline]
-fn push_prefix_range(bits:Bits3, xb:u32, yb:u32, zb:u32, rx:u32, ry:u32, rz:u32, out:&mut Vec<(u64,u64)>) {
-    let used  = (bits.lx - rx) + (bits.ly - ry) + (bits.lt - rz);
-    let pref  = morton3_prefix(xb, yb, zb, bits, used);
-    let total = (bits.lx + bits.ly + bits.lt) as u32;
-    let rem   = total - used;
-    let start = pref;
-    let end   = if rem == 0 { start } else { start | ((1u64 << rem) - 1) };
-    out.push((start, end));
-}
+// ===== 量化（严格闭区间，避免右端掉格） =====
 
 #[inline]
-fn q_range_f64(v0:f64, v1:f64, mn:f64, mx:f64, L:u32)->(u32,u32){
-    if L==0 || mx<=mn { return (0,0); }
-    let n = ((1u64<<L)-1) as f64;
+fn q_range_f64_closed(v0:f64, v1:f64, mn:f64, mx:f64, L:u32)->(u32,u32){
+    if L==0 || !(mx>mn) { return (0,0); }
+    let n  = ((1u64<<L)-1) as f64;
     let t0 = ((v0 - mn) / (mx - mn)).clamp(0.0, 1.0);
-    let t1 = ((v1 - mn) / (mx - mn)).clamp(0.0, 1.0);
+    let mut t1 = ((v1 - mn) / (mx - mn)).clamp(0.0, 1.0);
+    t1 = f64::from_bits((t1.to_bits()).wrapping_sub(1)).max(t0); // next_down
     let lo = (t0 * n).floor() as i64;
-    let hi = (t1 * n).ceil()  as i64 - 1;
+    let hi = (t1 * n).floor() as i64;
     let lo = lo.clamp(0, n as i64) as u32;
     let hi = hi.clamp(0, n as i64) as u32;
     (lo.min(hi), hi.max(lo))
 }
+
 #[inline]
-fn q_range_u64(v0:u64, v1:u64, mn:u64, mx:u64, L:u32)->(u32,u32){
-    if L==0 || mx<=mn { return (0,0); }
-    let n = ((1u64<<L)-1) as f64;
+fn q_range_u64_closed(v0:u64, v1:u64, mn:u64, mx:u64, L:u32)->(u32,u32){
+    if L==0 || !(mx>mn) { return (0,0); }
+    let n  = ((1u64<<L)-1) as f64;
     let t0 = (v0.saturating_sub(mn) as f64 / (mx - mn) as f64).clamp(0.0, 1.0);
-    let t1 = (v1.saturating_sub(mn) as f64 / (mx - mn) as f64).clamp(0.0, 1.0);
+    let mut t1 = (v1.saturating_sub(mn) as f64 / (mx - mn) as f64).clamp(0.0, 1.0);
+    t1 = f64::from_bits((t1.to_bits()).wrapping_sub(1)).max(t0);
     let lo = (t0 * n).floor() as i64;
-    let hi = (t1 * n).ceil()  as i64 - 1;
+    let hi = (t1 * n).floor() as i64;
     let lo = lo.clamp(0, n as i64) as u32;
     let hi = hi.clamp(0, n as i64) as u32;
     (lo.min(hi), hi.max(lo))

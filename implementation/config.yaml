@@ -1,16 +1,16 @@
 dataset:
   # 全域范围（供 sfc.rs 使用）。请按你的数据真实范围填写
-  lat_range: [39.5, 40.2]
-  lon_range: [116.0, 116.8]
-  time_range: [1175385600, 1356998400]  # 2007-12-01 ~ 2012-12-31 (示例，单位：秒)
+  lat_range: [39.0, 41.0]
+  lon_range: [115.0, 118.0]
+  time_range: [1176268800, 1343433600]  # 2007-04-11 ~ 2012-07-28 
 
 sfc:
   algorithm: "z3"
   center_lat: 39.9
-  x_precision_m: 100  # sfc区块精度，经度10米
-  y_precision_m: 100  # sfc区块精度，纬度10米
-  t_precision_s: 600 # sfc区块精度，时间60秒
-  time_bucket_s: 604800 # day：86400 , week：604800 , month：2592000
+  max_depth: 20
+  max_nodes: 50000
+  tail_bits_guard: 12
+  #time_bucket_s: 604800 # day：86400 , week：604800 , month：2592000
   max_ranges: null # null 表示不限制
 
 data:
@@ -27,15 +27,14 @@ experiment:
   # 这里保留一份口径，用于 window.txt 展示与 planner 的 gap/max_ranges 等控制
   algorithm: "z3"
   center_lat: 39.9
-  x_precision_m: 100
-  y_precision_m: 100
-  t_precision_s: 600
-  stop_tail_bits:   # 表示最小区块边长
-  merge_gap_keys: 4095 # 2^k-1,k=17 表示最大 gap
+  max_depth: 20
+  max_nodes: 50000
+  tail_bits_guard: 12
+  stop_tail_bits: 6  # 表示最小区块边长
   print_first: 15
   max_ranges: null
   debug: false
-  prefix_bits: 18  
+  prefix_bits: 12  
 
   placement:
     mode: "baseline"       # 未来可切换 "vnode" | "smart_vnode"

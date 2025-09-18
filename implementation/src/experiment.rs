@@ -199,9 +199,12 @@ fn write_params_snapshot(run_dir: &Path, cfg: &crate::config::Config) {
     _ = writeln!(f, "\n[SFC Config]");
     _ = writeln!(f, "algorithm={}", cfg.sfc.algorithm);
     _ = writeln!(f, "center_lat={}", cfg.sfc.center_lat);
-    _ = writeln!(f, "x_precision_m={}", cfg.sfc.x_precision_m);
-    _ = writeln!(f, "y_precision_m={}", cfg.sfc.y_precision_m);
-    _ = writeln!(f, "t_precision_s={}", cfg.sfc.t_precision_s);
+    _ = writeln!(f, "time_bucket_s={:?}", cfg.sfc.time_bucket_s);
+    _ = writeln!(f, "max_ranges={:?}", cfg.sfc.max_ranges);
+    _ = writeln!(f, "max_depth={:?}", cfg.sfc.max_depth);
+    _ = writeln!(f, "max_nodes={:?}", cfg.sfc.max_nodes);
+    _ = writeln!(f, "tail_bits_guard={:?}", cfg.sfc.tail_bits_guard);
+
 
     // 推导出的位数与环宽等（来自 SfcParams）
     _ = writeln!(
@@ -222,7 +225,6 @@ fn write_params_snapshot(run_dir: &Path, cfg: &crate::config::Config) {
 
     _ = writeln!(f, "\n[Experiment Config]");
     _ = writeln!(f, "stop_tail_bits={}", cfg.experiment.stop_tail_bits);
-    _ = writeln!(f, "merge_gap_keys={}", cfg.experiment.merge_gap_keys);
     _ = writeln!(f, "max_ranges={:?}", cfg.experiment.max_ranges);
 
     _ = writeln!(f, "\n[Metrics]");

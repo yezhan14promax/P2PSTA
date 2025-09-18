@@ -58,13 +58,13 @@ pub struct DatasetConfig {
 pub struct SfcConfig {
     pub algorithm: String,     // "z3" | "h3" | "z2t" | "h2t"
     pub center_lat: f64,
-    pub x_precision_m: f64,
-    pub y_precision_m: f64,
-    pub t_precision_s: u64,
 
     // Optional parameters used by sfc.rs
     pub time_bucket_s: Option<u64>,
     pub max_ranges: Option<usize>,
+    pub max_depth: Option<u32>,       // 最大递归深度
+    pub max_nodes: Option<usize>,     // 递归节点上限
+    pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
 }
 
 /* ---------- Experiment (Query, Plan Switching, Metric Toggles) ---------- */
@@ -76,17 +76,16 @@ pub struct ExperimentConfig {
     // Retains algorithm and merge controls for display in window.txt
     pub algorithm: String,
     pub center_lat: f64,
-    pub x_precision_m: f64,
-    pub y_precision_m: f64,
-    pub t_precision_s: u64,
     pub stop_tail_bits: u8,
-    pub merge_gap_keys: u64,
     pub max_ranges: Option<usize>,
     pub debug: Option<bool>,
     pub placement: PlacementConfig,
     pub metrics: MetricsConfig,
     pub queries: Vec<QueryWindow>,
     pub prefix_bits: Option<u32>, 
+    pub max_depth: Option<u32>,       // 最大递归深度
+    pub max_nodes: Option<usize>,     // 递归节点上限
+    pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
 }
 
 #[derive(Debug, Deserialize)]
