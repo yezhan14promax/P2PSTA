@@ -7,9 +7,9 @@ dataset:
 sfc:
   algorithm: "z3"
   center_lat: 39.9
-  max_depth: 20
+  max_depth: 24
   max_nodes: 50000
-  tail_bits_guard: 12
+  tail_bits_guard: null
   #time_bucket_s: 604800 # day：86400 , week：604800 , month：2592000
   max_ranges: null # null 表示不限制
 
@@ -23,28 +23,15 @@ output:
 network:
   num_nodes: 1024
 
+placement:
+  mode: "vnode"      # 可切换 "vnode" | "smart_vnode"| "baseline"
+  vnodes_per_node: 100
+
 experiment:
-  # 这里保留一份口径，用于 window.txt 展示与 planner 的 gap/max_ranges 等控制
-  algorithm: "z3"
-  center_lat: 39.9
-  max_depth: 20
-  max_nodes: 50000
-  tail_bits_guard: 12
   stop_tail_bits: 6  # 表示最小区块边长
   print_first: 15
-  max_ranges: null
   debug: false
-  prefix_bits: 12  
-
-  placement:
-    mode: "baseline"       # 未来可切换 "vnode" | "smart_vnode"
-    per_node: null
-    vnode_bits: null
-    smart:
-      hot_prefix_top_k: null
-      split_factor_bits: null
-      rebalance_cooldown_s: null
-      co_placement_jaccard: null
+  prefix_bits: null  
 
   metrics:
     compute_node_cover: true
@@ -57,12 +44,19 @@ experiment:
       lon_min: 116.386
       lat_max: 39.923
       lon_max: 116.411
-      t_start: "2008-06-01T03:00:00Z"
-      t_end:   "2010-06-10T03:15:00Z"
-    - name: "beijing"
-      lat_min: 39.5
-      lon_min: 116.0
-      lat_max: 40.2
-      lon_max: 116.8
-      t_start: "2008-05-10T22:00:00Z"
-      t_end:   "2012-05-20T01:00:00Z"
+      t_start: "2008-08-01T03:00:00Z"
+      t_end:   "2008-08-10T03:15:00Z"
+    - name: "Guomao_CBD"
+      lat_min: 39.906
+      lon_min: 116.440
+      lat_max: 39.923
+      lon_max: 116.480
+      t_start: "2008-08-01T03:00:00Z"
+      t_end:   "2008-08-10T03:15:00Z"
+    - name: "Changping_District"
+      lat_min: 40.080
+      lon_min: 116.220
+      lat_max: 40.150
+      lon_max: 116.300
+      t_start: "2008-08-01T03:00:00Z"
+      t_end:   "2008-08-10T03:15:00Z"

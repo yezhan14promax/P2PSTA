@@ -1,15 +1,15 @@
-use crate::config::{Config, QueryWindow};
+use crate::config::{Config, QueryWindow,debug_enabled};
 use crate::sfc;
 use crate::sfc::{SfcParams, encode_point, encode_point_z3, ranges_for_window, merge_ranges, build_sfc_params};
 
 // ====================== Debug 开关 & 小工具 ======================
 
-fn debug_enabled(cfg: &Config) -> bool {
-    if let Some(b) = cfg.experiment.debug { return b; }
-    std::env::var("P2PSTA_DEBUG")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
+// fn debug_enabled(cfg: &Config) -> bool {
+//     if let Some(b) = cfg.experiment.debug { return b; }
+//     std::env::var("P2PSTA_DEBUG")
+//         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+//         .unwrap_or(false)
+// }
 
 fn key_covered(k: u64, ranges: &[(u64,u64)]) -> bool {
     for (s,e) in ranges { if *s <= k && k <= *e { return true; } }

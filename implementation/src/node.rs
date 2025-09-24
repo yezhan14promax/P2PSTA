@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Segment {
     pub user: String,         // User ID
     pub traj_id: u64,

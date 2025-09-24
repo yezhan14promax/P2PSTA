@@ -8,12 +8,11 @@ pub struct Config {
     // Required for sfc.rs
     pub dataset: DatasetConfig,
     pub sfc: SfcConfig,
-
-    // Used by other modules
     pub data: DataConfig,
     pub output: OutputConfig,
     pub network: NetworkConfig,
     pub experiment: ExperimentConfig,
+    pub placement: PlacementConfig,
 }
 
 impl Config {
@@ -24,6 +23,13 @@ impl Config {
             .expect("failed to read config yaml");
         serde_yaml::from_str::<Config>(&s).expect("failed to parse config yaml")
     }
+}
+
+pub fn debug_enabled(cfg: &Config) -> bool {
+    if let Some(b) = cfg.experiment.debug { return b; }
+    std::env::var("P2PSTA_DEBUG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 /* ---------- Blocks ---------- */
@@ -58,8 +64,6 @@ pub struct DatasetConfig {
 pub struct SfcConfig {
     pub algorithm: String,     // "z3" | "h3" | "z2t" | "h2t"
     pub center_lat: f64,
-
-    // Optional parameters used by sfc.rs
     pub time_bucket_s: Option<u64>,
     pub max_ranges: Option<usize>,
     pub max_depth: Option<u32>,       // 最大递归深度
@@ -67,31 +71,26 @@ pub struct SfcConfig {
     pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
 }
 
-/* ---------- Experiment (Query, Plan Switching, Metric Toggles) ---------- */
-
 #[derive(Debug, Deserialize)]
 pub struct ExperimentConfig {
     pub print_first: Option<usize>,
-
-    // Retains algorithm and merge controls for display in window.txt
-    pub algorithm: String,
-    pub center_lat: f64,
+    // pub algorithm: String,
+    // pub center_lat: f64,
     pub stop_tail_bits: u8,
-    pub max_ranges: Option<usize>,
+    // pub max_ranges: Option<usize>,
     pub debug: Option<bool>,
-    pub placement: PlacementConfig,
     pub metrics: MetricsConfig,
     pub queries: Vec<QueryWindow>,
     pub prefix_bits: Option<u32>, 
-    pub max_depth: Option<u32>,       // 最大递归深度
-    pub max_nodes: Option<usize>,     // 递归节点上限
-    pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
+    // pub max_depth: Option<u32>,       // 最大递归深度
+    // pub max_nodes: Option<usize>,     // 递归节点上限
+    // pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PlacementConfig {
     pub mode: String,               // "baseline" | "vnode" | "smart_vnode"
-    pub per_node: Option<usize>,    // for vnode
+    pub vnodes_per_node: Option<usize>,    // for vnode
     pub vnode_bits: Option<usize>,  // for vnode
     pub smart: Option<SmartConfig>, // for smart vnode
 }

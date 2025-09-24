@@ -6,6 +6,7 @@ mod experiment;
 mod placement;
 mod planner;
 mod query;
+mod vnode;
 
 use std::env;
 

@@ -374,6 +374,10 @@ impl Network {
         out
     }
 
+    #[inline] pub fn node_count(&self) -> usize { self.nodes.len() }
+    #[inline] pub fn node_stats_range(&self, idx: usize) -> (usize, Option<u64>, Option<u64>) { self.nodes[idx].stats_range() }
+    #[inline] pub fn node_id(&self, idx: usize) -> u64 { self.node_id_of(idx) }
+
     /// 打印节点分布（调试用）
     pub fn print_node_distribution(&self) {
         println!("--- Node data distribution ---");
