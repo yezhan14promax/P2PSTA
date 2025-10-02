@@ -97,10 +97,17 @@ pub struct PlacementConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct SmartConfig {
+    pub low_ratio: Option<f64>,       // default 0.95
+    pub high_ratio: Option<f64>,      // default 1.10
     pub hot_prefix_top_k: Option<f64>,
     pub split_factor_bits: Option<u8>,
     pub rebalance_cooldown_s: Option<u64>,
     pub co_placement_jaccard: Option<f64>,
+}
+
+impl SmartConfig {
+    pub fn low(&self) -> f64 { self.low_ratio.unwrap_or(0.95) }
+    pub fn high(&self) -> f64 { self.high_ratio.unwrap_or(1.10) }
 }
 
 #[derive(Debug, Deserialize)]

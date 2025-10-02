@@ -7,6 +7,7 @@ mod placement;
 mod planner;
 mod query;
 mod vnode;
+mod smart;
 
 use std::env;
 

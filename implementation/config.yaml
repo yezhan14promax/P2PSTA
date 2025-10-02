@@ -21,11 +21,16 @@ output:
   result_dir: "results"
 
 network:
-  num_nodes: 1024
+  num_nodes: 8192
 
 placement:
-  mode: "vnode"      # 可切换 "vnode" | "smart_vnode"| "baseline"
-  vnodes_per_node: 100
+  mode: "snode"      # 可切换 "vnode" | "snode"| "baseline"
+  vnodes_per_node: 10
+  online_counting: true
+  guard_last_bucket: true
+  smart:
+    low_ratio: 0.99
+    high_ratio: 1.05
 
 experiment:
   stop_tail_bits: 6  # 表示最小区块边长

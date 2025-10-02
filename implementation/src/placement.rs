@@ -1,6 +1,6 @@
 // 统一放置接口：Baseline / VNode / SmartVNode 都实现这个 Trait
 use crate::node::Segment;
-
+use std::any::Any;
 
 /// 节点分布行：(pnode_idx, node_id, total_count, min_key, max_key)
 pub type NodeDistRow = (usize, u64, usize, Option<u64>, Option<u64>);
@@ -28,27 +28,34 @@ pub type PNodeVNodeDetailRow = (
     Option<u64>, // vnode_stored_max
 );
 
-pub trait Placement {
+pub trait Placement: Any {
     fn node_id(&self, idx: usize) -> u64;
     fn node_responsible_interval(&self, idx: usize) -> (u64, u64, bool);
+
     /// 插入：返回路由跳数
-    fn insert(&mut self, entry_node: usize, seg: Segment) -> usize;
+    fn insert(&mut self, entry_node: usize, seg: crate::node::Segment) -> usize;
+
     /// 区间查询（不带节点上下文）
-    fn query_range(&self, entry_node: usize, key_range: (u64, u64)) -> (Vec<&Segment>, usize);
+    fn query_range(&self, entry_node: usize, key_range: (u64, u64)) -> (Vec<&crate::node::Segment>, usize);
+
     /// 区间查询（带节点上下文）
     fn query_range_with_nodes(
         &self,
         entry_node: usize,
         key_range: (u64, u64),
-    ) -> (Vec<(usize, &Segment)>, usize, Vec<usize>);
-    /// 节点分布行
-    fn node_distribution_rows(&self) -> Vec<NodeDistRow>;
-    fn print_node_distribution(&self);
-    fn export_node_ranges(&self) -> Vec<NodeRangeRow>;
-    fn export_node_data<'a>(&'a self, idx: usize) -> Vec<&'a crate::node::Segment>;
-    fn export_pnode_vnode_details(&self) -> Vec<PNodeVNodeDetailRow>;
+    ) -> (Vec<(usize, &crate::node::Segment)>, usize, Vec<usize>);
 
+    /// 节点分布行
+    fn node_distribution_rows(&self) -> Vec<crate::placement::NodeDistRow>;
+    fn print_node_distribution(&self);
+    fn export_node_ranges(&self) -> Vec<crate::placement::NodeRangeRow>;
+    fn export_node_data<'a>(&'a self, idx: usize) -> Vec<&'a crate::node::Segment>;
+    fn export_pnode_vnode_details(&self) -> Vec<crate::placement::PNodeVNodeDetailRow>;
+
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
+
 
 // ====== Baseline：Network 直接作为 Placement 实现 ======
 use crate::network::Network;
@@ -83,6 +90,9 @@ impl Placement for Network {
     ) -> (Vec<(usize, &Segment)>, usize, Vec<usize>) {
         Network::query_range_with_nodes(self, entry_node, key_range)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     #[inline]
     fn node_distribution_rows(&self) -> Vec<NodeDistRow> {

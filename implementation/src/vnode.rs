@@ -88,6 +88,9 @@ impl Placement for VNetwork {
         }
     }
 
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+
     // ========= 下面是你要的三个“导出”方法 =========
 
     fn export_node_ranges(&self) -> Vec<NodeRangeRow> {
@@ -133,7 +136,7 @@ impl Placement for VNetwork {
             let it = Network::export_node_data(&self.inner, v);
             out.extend(it);
             v += self.pnodes;
-        }
+        } 
         out
     }
 
