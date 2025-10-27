@@ -19,9 +19,9 @@ import matplotlib.pyplot as plt
 # ==================== 配置 ====================
 BASE_DIR = Path("D:/implementation/p2psta/implementation/results")
 RUNS_ORDER = [
-    "baseline128","snode128","p128v10","p128v100","p128v1000","p128v10000",
-    "baseline1024","snode1024","p1024v10","p1024v100","p1024v1000","p1024v10000",
-    "baseline8192","snode8192","p8192v10","p8192v100","p8192v1000",
+    "op128","snode128","p128v10","p128v100","p128v1000","p128v10000",
+    "op1024","snode1024","p1024v10","p1024v100","p1024v1000","p1024v10000",
+    "op8192","snode8192","p8192v10","p8192v100","p8192v1000",
 ]
 QUERIES = [
     ("forbidden_city", "query_00_forbidden_city"),
