@@ -2,6 +2,13 @@
 /geolife
 /geolife_clean.csv
 /geolife_clean.pkl
-/py
 /results
+/py/figs
+/py/paper_tables
+/py/visualisation_baseline.ipynb
+/py/visualisation_snode.ipynb
+/py/visualisation_vnode.ipynb
+/py/summary.ipynb
+/py/extract_summary_tables_support.py
+/py/extract_summary_tables.ipynb
 /回答
