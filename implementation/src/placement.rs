@@ -1,21 +1,21 @@
-// 统一放置接口：Baseline / VNode / SmartVNode 都实现这个 Trait
+// Unified placement interface: Baseline / VNode / SmartVNode all implement this trait
 use crate::node::Segment;
 use std::any::Any;
 
-/// 节点分布行：(pnode_idx, node_id, total_count, min_key, max_key)
+/// Node distribution row: (pnode_idx, node_id, total_count, min_key, max_key)
 pub type NodeDistRow = (usize, u64, usize, Option<u64>, Option<u64>);
-// ===== 新增类型别名（统一 CSV 行的含义） =====
+// ===== Type aliases added to unify CSV row semantics =====
 pub type NodeRangeRow = (
-    usize,         // node_idx —— 对 baseline = 物理节点；对 vnode = 物理节点（已聚合）
-    u64,           // node_id  —— 对 vnode = 代表性 id（取旗下第一个 vnode 的 id）
-    u64, u64,      // resp_start, resp_end  —— 负责区间；对 vnode 聚合仅为粗略范围
-    bool,          // wrapped   —— 区间是否跨越 2^m
+    usize,         // node_idx: physical node for baseline; aggregated physical node for vnode
+    u64,           // node_id: representative id for vnode mode (the first vnode id owned by the pnode)
+    u64, u64,      // resp_start, resp_end: responsible interval; only an approximate range after vnode aggregation
+    bool,          // wrapped: whether the interval crosses 2^m
     usize,         // stored_total
     Option<u64>,   // stored_min
     Option<u64>,   // stored_max
 );
 
-// 每条行代表“某 pnode 下的某个 vnode 的细节”
+// Each row captures the details of one vnode under a pnode
 pub type PNodeVNodeDetailRow = (
     usize,   // pnode_idx
     u64,     // pnode_rep_id
@@ -32,20 +32,20 @@ pub trait Placement: Any {
     fn node_id(&self, idx: usize) -> u64;
     fn node_responsible_interval(&self, idx: usize) -> (u64, u64, bool);
 
-    /// 插入：返回路由跳数
+    /// Insert and return the routing hop count
     fn insert(&mut self, entry_node: usize, seg: crate::node::Segment) -> usize;
 
-    /// 区间查询（不带节点上下文）
+    /// Range query without node context
     fn query_range(&self, entry_node: usize, key_range: (u64, u64)) -> (Vec<&crate::node::Segment>, usize);
 
-    /// 区间查询（带节点上下文）
+    /// Range query with node context
     fn query_range_with_nodes(
         &self,
         entry_node: usize,
         key_range: (u64, u64),
     ) -> (Vec<(usize, &crate::node::Segment)>, usize, Vec<usize>);
 
-    /// 节点分布行
+    /// Node distribution rows
     fn node_distribution_rows(&self) -> Vec<crate::placement::NodeDistRow>;
     fn print_node_distribution(&self);
     fn export_node_ranges(&self) -> Vec<crate::placement::NodeRangeRow>;
@@ -57,13 +57,13 @@ pub trait Placement: Any {
 }
 
 
-// ====== Baseline：Network 直接作为 Placement 实现 ======
+// ====== Baseline: Network directly implements Placement ======
 use crate::network::Network;
 
 impl Placement for Network {
     #[inline]
     fn node_id(&self, idx: usize) -> u64 {
-        // 调用 Network 的固有方法（不同名，避免递归）
+        // Call the inherent Network method directly to avoid recursion
         self.node_id_of(idx)
     }
 
@@ -104,7 +104,7 @@ impl Placement for Network {
         Network::print_node_distribution(self)
     }
     fn export_node_ranges(&self) -> Vec<crate::placement::NodeRangeRow> {
-        // 注意避免递归，显式调用固有方法
+        // Avoid recursion by explicitly calling the inherent method
         Network::export_node_ranges(self)
             .into_iter()
             .map(|(i,id,rs,re,wrapped,total,mn,mx)| (i,id,rs,re,wrapped,total,mn,mx))
@@ -116,14 +116,14 @@ impl Placement for Network {
     }
 
     fn export_pnode_vnode_details(&self) -> Vec<crate::placement::PNodeVNodeDetailRow> {
-        // baseline：pnode 与“vnode 等价项”是 1:1
+        // In baseline mode, the pnode and its vnode-equivalent view are 1:1
         let mut out = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {
             let (rs, re, wrapped) = self.node_responsible_interval(i);
             let (total, mn, mx) = node.stats_range();
             out.push((
-                i, node.node_id,   // pnode 视角
-                i, node.node_id,   // vnode 等价视角
+                i, node.node_id,   // pnode view
+                i, node.node_id,   // vnode-equivalent view
                 rs, re, wrapped,
                 total, mn, mx
             ));

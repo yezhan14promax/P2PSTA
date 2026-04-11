@@ -1,14 +1,14 @@
 use crate::config::Config;
 
 /*
-需要的 SfcConfig 最小字段集合（请确认 config.rs 与 YAML 对齐）：
+Minimal SfcConfig fields required here (make sure config.rs and the YAML stay aligned):
 pub struct SfcConfig {
     pub algorithm: String,
     pub center_lat: f64,
     pub time_bucket_s: Option<u64>,
     pub max_ranges: Option<usize>,
 
-    // 递归/粗接收参数（可选）
+    // Recursive / coarse-accept parameters (optional)
     pub max_depth: Option<u32>,
     pub max_nodes: Option<usize>,
     pub tail_bits_guard: Option<u32>,
@@ -20,9 +20,9 @@ pub struct SfcConfig {
 #[derive(Clone, Copy, Debug)]
 pub enum SfcAlgorithm {
     Z3,   // 3D Z-order
-    H3,   // 3D Hilbert (当前用 Morton 占位，接口对齐)
+    H3,   // 3D Hilbert (currently approximated with Morton to keep the interface aligned)
     Z2T,  // 2D Z-order + time bucket
-    H2T,  // 2D Hilbert + time bucket (当前用 2D Morton 近似)
+    H2T,  // 2D Hilbert + time bucket (currently approximated with 2D Morton)
 }
 
 impl SfcAlgorithm {
@@ -43,16 +43,16 @@ pub struct Bits3 { pub lx: u32, pub ly: u32, pub lt: u32 }
 #[derive(Clone, Debug)]
 pub struct SfcParams {
     pub algo: SfcAlgorithm,
-    pub bits: Bits3,                 // z3/h3 使用三轴，z2t/h2t 只用 lx,ly
+    pub bits: Bits3,                 // z3/h3 use all three axes; z2t/h2t use only lx and ly
     pub glat: (f64,f64),
     pub glon: (f64,f64),
     pub gtime: (u64,u64),
     pub center_lat: f64,
-    pub time_bucket_s: u64,          // 仅 z2t/h2t 使用
-    pub bucket_bits: u32,            // 仅 z2t/h2t 使用
-    pub max_ranges: Option<usize>,   // 查询区间上限（防爆）
-    pub ring_m: usize,               // DHT/ring 有效位数
-    // 递归与粗接收控制（z3/h3 用；z2t/h2t 忽略）
+    pub time_bucket_s: u64,          // used only by z2t/h2t
+    pub bucket_bits: u32,            // used only by z2t/h2t
+    pub max_ranges: Option<usize>,   // upper bound on query ranges to avoid blow-ups
+    pub ring_m: usize,               // effective bit width of the DHT/ring
+    // Recursive and coarse-accept controls (used by z3/h3; ignored by z2t/h2t)
     pub max_depth: u32,
     pub max_nodes: usize,
     pub tail_bits_guard: u32,
@@ -62,7 +62,7 @@ pub struct SfcParams {
 
 /// Derive SfcParams from Config (fixed bits for z3/h3; z2t/h2t uses buckets)
 pub fn build_sfc_params(cfg: &Config) -> SfcParams {
-    // 数据集全局范围
+    // Dataset-wide bounds
     let glat: (f64,f64) = cfg.dataset.lat_range;
     let glon: (f64,f64) = cfg.dataset.lon_range;
     let gtime: (u64,u64) = cfg.dataset.time_range
@@ -72,20 +72,20 @@ pub fn build_sfc_params(cfg: &Config) -> SfcParams {
     let algo = SfcAlgorithm::from_str(&cfg.sfc.algorithm);
     let center_lat: f64 = cfg.sfc.center_lat;
 
-    // 递归/粗接收参数（给出温和默认）
+    // Recursive / coarse-accept parameters with conservative defaults
     let max_depth       = cfg.sfc.max_depth.unwrap_or(30);
     let max_nodes       = cfg.sfc.max_nodes.unwrap_or(200_000);
     let tail_bits_guard = cfg.sfc.tail_bits_guard.unwrap_or(8);
 
-    // z2t/h2t：时间桶配置（Option<u64> → 默认 3600s）
+    // z2t/h2t: time-bucket configuration (Option<u64> -> default 3600s)
     let time_bucket_s: u64 = cfg.sfc.time_bucket_s.unwrap_or(3600).max(1);
     let num_buckets = (dt_s + time_bucket_s - 1) / time_bucket_s;
     let mut bucket_bits = ceil_log2_u64(num_buckets).clamp(0, 31) as u32;
-    bucket_bits = bucket_bits.max(1); // 至少 1 bit
+    bucket_bits = bucket_bits.max(1); // at least 1 bit
 
-    // 固定位长策略：
+    // Fixed bit-allocation policy:
     // - Z3/H3: x=10, y=10, t=10 (total=30)
-    // - Z2T/H2T: x=10, y=10, t 走桶（bucket_bits）
+    // - Z2T/H2T: x=10, y=10, and t is bucketized via bucket_bits
     let (bits, ring_m) = match algo {
         SfcAlgorithm::Z3 | SfcAlgorithm::H3 => {
             let b = Bits3 { lx: 10, ly: 10, lt: 10 };

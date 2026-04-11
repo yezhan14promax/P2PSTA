@@ -2,7 +2,7 @@ use crate::config::{Config, QueryWindow,debug_enabled};
 use crate::sfc;
 use crate::sfc::{SfcParams, encode_point, encode_point_z3, ranges_for_window, merge_ranges, build_sfc_params};
 
-// ====================== Debug 开关 & 小工具 ======================
+// ====================== Debug switches and small helpers ======================
 
 // fn debug_enabled(cfg: &Config) -> bool {
 //     if let Some(b) = cfg.experiment.debug { return b; }
@@ -110,7 +110,7 @@ fn probe_key_consistency(p: &SfcParams, q: &QueryWindow, t_start_s: u64, t_end_s
     }
 }
 
-// ====================== 计划结果 ======================
+// ====================== Planning result ======================
 
 #[derive(Debug, Clone)]
 pub struct PlanResult {
@@ -121,9 +121,9 @@ pub struct PlanResult {
     pub t_end_s: u64,
 }
 
-// ====================== 工具：时间/锚点/前缀桶 ======================
+// ====================== Helpers: time / anchors / prefix buckets ======================
 
-/// 将字符串/整数时间解析为 UTC 秒
+/// Parse string/integer timestamps into UTC seconds
 fn parse_ts_to_epoch_s(ts_str: &str) -> Option<u64> {
     if let Ok(v) = ts_str.trim().parse::<i64>() { return Some(v.max(0) as u64); }
     if let Ok(dt) = ts_str.parse::<chrono::DateTime<chrono::Utc>>() {
@@ -140,15 +140,15 @@ fn build_anchor_points(q: &QueryWindow) -> Vec<(f64, f64)> {
     let lat_c = 0.5 * (q.lat_min + q.lat_max);
     let lon_c = 0.5 * (q.lon_min + q.lon_max);
     vec![
-        (lat_c, lon_c),           // 中心
-        (q.lat_min, q.lon_min),   // 四角
+        (lat_c, lon_c),           // center
+        (q.lat_min, q.lon_min),   // four corners
         (q.lat_min, q.lon_max),
         (q.lat_max, q.lon_min),
         (q.lat_max, q.lon_max),
     ]
 }
 
-/// 计算给定高位前缀 bucket 的键空间边界 [lo, hi]
+/// Compute the key-space boundary [lo, hi] for a bucket with a given high-bit prefix
 #[inline]
 fn bucket_bounds(prefix: u64, p: u32, total_bits: u32) -> (u64, u64) {
     let p = p.min(total_bits);
@@ -158,8 +158,8 @@ fn bucket_bounds(prefix: u64, p: u32, total_bits: u32) -> (u64, u64) {
     (lo, hi)
 }
 
-/// 位前缀归并：把所有区间按高位前缀（长度 p）分桶；
-/// 同一桶内的片段并成一个 [min, max]，不收缩，因此绝不会漏真阳性。
+/// Prefix-bit coalescing: bucket all intervals by their high-bit prefix of length p;
+/// merge fragments in the same bucket into one [min, max] without shrinking, so true positives are never missed.
 fn prefix_bucket_merge(
     ranges: &[(u64,u64)],
     p: u32,
@@ -203,26 +203,26 @@ fn prefix_bucket_merge(
     merge_ranges(out)
 }
 
-// 供外部调用（保持旧接口）
+// Public wrapper kept for backward compatibility
 pub fn build_params(cfg: &Config) -> SfcParams { build_sfc_params(cfg) }
 
-// ====================== 主入口 ======================
+// ====================== Main entry ======================
 
 pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
-    // 1) SFC 参数
+    // 1) SFC parameters
     let p = build_sfc_params(cfg);
 
-    // 2) 解析时间（UTC 秒；失败用全局边界兜底）
+    // 2) Parse time into UTC seconds; fall back to global bounds on failure
     let t_start_s = crate::planner::parse_ts_to_epoch_s(&q.t_start).unwrap_or(p.gtime.0);
     let t_end_s   = crate::planner::parse_ts_to_epoch_s(&q.t_end).unwrap_or(p.gtime.1);
 
-    // 3) 闭区间 + pad（两侧各 1 个量化 bin）
+    // 3) Closed interval + padding (one quantization bin on each side)
     let bins  = ((1u64 << p.bits.lt) - 1) as f64;
     let bin_w = ((p.gtime.1 - p.gtime.0) as f64 / bins).ceil() as u64;
     let t_lo  = t_start_s.saturating_sub(bin_w);
     let t_hi  = t_end_s.saturating_add(bin_w).saturating_sub(1);
 
-    // 4) 生成原始覆盖（一次性 z3）
+    // 4) Generate the raw cover (single-shot z3)
     let ranges_raw = ranges_for_window(
         &p,
         q.lat_min, q.lat_max,
@@ -230,18 +230,18 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
         t_lo, t_hi,
     );
 
-    // 5) 常规合并
+    // 5) Regular merging
     let mut ranges_merged = merge_ranges(ranges_raw.clone());
 
-    // 6) 位前缀归并（核心）
+    // 6) Prefix-bit coalescing (core step)
     let total_bits: u32 = p.bits.lx + p.bits.ly + p.bits.lt;
     let p_bits: u32 = cfg.experiment.prefix_bits.unwrap_or(30).min(total_bits);
     ranges_merged = prefix_bucket_merge(&ranges_merged, p_bits, total_bits);
 
-    // 7) 锚点兜底（并集注入，绝不相交）
+    // 7) Anchor fallback (union injection, never intersection)
     let stop_tail_bits: u8 = cfg.experiment.stop_tail_bits;
     if stop_tail_bits > 0 {
-        let anchors_geo = build_anchor_points(q); // 中心 + 四角
+        let anchors_geo = build_anchor_points(q); // center + four corners
         let span_mask: u64 = if stop_tail_bits >= 63 { u64::MAX } else { (1u64 << stop_tail_bits) - 1 };
 
         let t_edges = [ t_start_s, t_end_s.saturating_sub(1) ];
@@ -256,13 +256,13 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
             }
         }
 
-        // 并集注入 + 合并
+        // Union injection + merge
         let mut injected = ranges_merged.clone();
         injected.extend(edge_buckets.into_iter());
         ranges_merged = merge_ranges(injected);
     }
 
-    // 调试输出（统一受开关控制）
+    // Debug output controlled by the same switch
     if debug_enabled(cfg) {
         probe_time_coverage(&p, q.lat_min, q.lat_max, q.lon_min, q.lon_max, t_start_s, t_end_s, &ranges_merged);
         probe_time_quantization(&p, t_start_s, t_end_s);
@@ -271,7 +271,7 @@ pub fn plan_window(cfg: &Config, q: &QueryWindow) -> PlanResult {
         scan_time_coverage(&p, lat_c, lon_c, t_start_s, t_end_s, 3600, &ranges_merged);
         probe_key_consistency(&p, q, t_start_s, t_end_s);
         println!("after prefix-bucket: {}", ranges_merged.len());
-        // 4) 最小计数验证（可选）
+        // 4) Minimum-count validation (optional)
         let mut covered_hours = 0u64;
         let mut t = t_start_s;
         while t < t_end_s {

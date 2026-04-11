@@ -2,7 +2,7 @@ use super::{
     Bits3, SfcParams,
     q_f64, q_u64,
     hilbert3_encode_equal_bits,
-    merge_with_gap, // <- 不再导入 merge_ranges
+    merge_with_gap, // merge_ranges is no longer imported here
 };
 
 pub fn encode_point_h3(p: &SfcParams, lat: f64, lon: f64, time: u64) -> u64 {
@@ -14,7 +14,7 @@ pub fn encode_point_h3(p: &SfcParams, lat: f64, lon: f64, time: u64) -> u64 {
     hilbert3_encode_equal_bits(x,y,z,lh)
 }
 
-/// 近似覆盖：采样 + 容忍间隙合并
+/// Approximate cover: sampling + gap-tolerant merging
 pub fn ranges_for_window_h3(p:&SfcParams,
     lat_min:f64, lat_max:f64, lon_min:f64, lon_max:f64, t_min:u64, t_max:u64
 )->Vec<(u64,u64)>{

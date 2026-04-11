@@ -337,29 +337,29 @@ def plot_hits_vs_hops_mirrored(metrics_by_run, run_names, savepath: Path):
     group_h = 0.7
     bar_h = group_h / (len(dens) + 0.2)
 
-    # 用来收集图例句柄
+    # Collect legend handles
     legend_handles, legend_labels = [], []
 
     for i, d in enumerate(dens):
         color = DENSITY_COLORS.get(d, None)
         offset = (i - (len(dens)-1)/2) * bar_h
 
-        # 左侧：Hit pnodes（负轴）
+        # Left side: Hit pnodes (negative axis)
         ax.barh(y + offset, -hits[i, :], height=bar_h*0.9,
                 color=color, alpha=0.95)
 
-        # 右侧：Total route hops（正轴，缩放）
+        # Right side: Total route hops (positive axis, scaled)
         ax.barh(y + offset, hops[i, :] * scale, height=bar_h*0.9,
                 color=color, alpha=0.45, edgecolor="none")
 
-        # 为图例添加一个代理方块（每个密度一个）
+        # Add a proxy patch to legend (one per density)
         legend_handles.append(Patch(facecolor=color, edgecolor="none"))
         legend_labels.append(d)
 
-    # 中线
+    # Median line
     ax.axvline(0, color="#333", lw=1.0)
 
-    # 轴标签等保持不变……
+    # Keep axis labels and other formatting unchanged...
     ax.set_yticks(y); ax.set_yticklabels(runs_sorted, fontsize=10)
     ax.set_xlabel("Hit pnodes (left; count)")
     xmax = np.nanmax([np.abs(ax.get_xlim()[0]), np.abs(ax.get_xlim()[1])])
@@ -373,10 +373,10 @@ def plot_hits_vs_hops_mirrored(metrics_by_run, run_names, savepath: Path):
 
     ax.grid(axis="x", alpha=0.25)
 
-    # ✅ 完整图例（上移一点避免靠底）
+    # Full legend; lift it slightly so it does not sit too low
     leg = ax.legend(legend_handles, legend_labels,
                     title="Density window",
-                    loc="lower right", bbox_to_anchor=(1.0, 0.26),  # 调高 y 值可继续上移
+                    loc="lower right", bbox_to_anchor=(1.0, 0.26),  # increase y to move it higher
                     frameon=True)
     leg.get_frame().set_alpha(0.9)
     leg.get_frame().set_facecolor("white")
@@ -384,7 +384,7 @@ def plot_hits_vs_hops_mirrored(metrics_by_run, run_names, savepath: Path):
     plt.tight_layout(rect=[0, 0.04, 1, 0.97])
     fig.suptitle("Hit pnodes (left) vs Total route hops (right) — mirrored grouped bars",
                 y=0.995, fontsize=16)
-    fig.savefig(savepath, dpi=DPI)  # 如有裁切可加 bbox_inches="tight"
+    fig.savefig(savepath, dpi=DPI)  # add bbox_inches="tight" if anything gets clipped
     plt.close(fig)
     print(f"[Saved] {savepath}")
 
@@ -421,7 +421,7 @@ def plot_avg_hops_grouped(metrics_by_run, run_names, savepath: Path):
 
 # ================== main ==================
 def main():
-    # —— 1) 读取每个 run 的 pnode 向量，按方案名推断期望 P 并补零 —— 
+    # --- 1) Read each run's pnode vector, infer the expected P from the scheme name, and pad zeros ---
     valid = []
     run_info = {}
     for name in RUNS:
@@ -431,7 +431,7 @@ def main():
             continue
 
         expected_p = parse_pcount(name)  # op8192 / snode1024 / p128v100 -> 8192/1024/128
-        df = load_pnode_vector(csv_path, expected_pcount=expected_p)  # <<< 会补齐 0 负载 pnode
+        df = load_pnode_vector(csv_path, expected_pcount=expected_p)  # <<< fills in zero-load pnodes
         if df.empty:
             print(f"[Warn] {name} empty after aggregation")
             continue
@@ -447,20 +447,20 @@ def main():
         print("No valid runs. Nothing to plot.")
         return
 
-    # —— 2) 按 pnode 数分组并输出三张图（linear / log-y / ECDF）——
-    # 组内排序：op{P} -> snode{P} -> p{P}v{...}（v 升序）
+    # --- 2) Group by pnode count and emit three figures (linear / log-y / ECDF) ---
+    # In-group order: op{P} -> snode{P} -> p{P}v{...} (ascending v)
     groups = {}
     for name, info in run_info.items():
         groups.setdefault(info["pcount"], []).append(name)
 
     for pcount in sorted(groups.keys()):
-        # 组内排序
+        # Sort within the group
         names = sort_runs_scheme_order_grouped(groups[pcount])
 
-        # 组装折线数据（label, x, y）
+        # Assemble line-series data as (label, x, y)
         lines = [(name, run_info[name]["x"], run_info[name]["y"]) for name in names]
 
-        # 输出三张图（文件名含 P）
+        # Emit three figures (filenames include P)
         out_linear = OUT_DIR / f"records_per_pnode_LINEAR_P{pcount}.png"
         out_logy   = OUT_DIR / f"records_per_pnode_LOG_P{pcount}.png"
         out_ecdf   = OUT_DIR / f"ecdf_records_LOGX_P{pcount}.png"
@@ -469,7 +469,7 @@ def main():
         plot_per_pnode_logy (str(pcount), lines, out_logy)
         plot_cdf_logx       (str(pcount), lines, out_ecdf)
 
-    # —— 3) 指标图：保持现有逻辑（镜像 hits vs total hops + avg hops 分组柱）——
+    # --- 3) Metric figures: keep the existing logic (mirrored hits vs total hops + grouped avg-hops bars) ---
     metrics_by_run, runs_with_metrics = collect_metrics_all_runs()
     if runs_with_metrics:
         plot_hits_vs_hops_mirrored(

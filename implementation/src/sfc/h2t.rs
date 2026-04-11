@@ -15,7 +15,7 @@ pub fn encode_point_h2t(p:&SfcParams, lat:f64, lon:f64, time:u64)->u64{
     (bucket << (lh+lh)) | h as u64
 }
 
-/// 近似覆盖：每个时间桶内做 2D 采样 + 容忍间隙合并
+/// Approximate cover: 2D sampling inside each time bucket + gap-tolerant merging
 pub fn ranges_for_window_h2t(p:&SfcParams,
     lat_min:f64, lat_max:f64, lon_min:f64, lon_max:f64, t_min:u64, t_max:u64
 )->Vec<(u64,u64)>{

@@ -66,9 +66,9 @@ pub struct SfcConfig {
     pub center_lat: f64,
     pub time_bucket_s: Option<u64>,
     pub max_ranges: Option<usize>,
-    pub max_depth: Option<u32>,       // 最大递归深度
-    pub max_nodes: Option<usize>,     // 递归节点上限
-    pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
+    pub max_depth: Option<u32>,       // Maximum recursion depth
+    pub max_nodes: Option<usize>,     // Maximum recursion nodes
+    pub tail_bits_guard: Option<u32>, // Tail bits coarse acceptance threshold
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,9 +82,9 @@ pub struct ExperimentConfig {
     pub metrics: MetricsConfig,
     pub queries: Vec<QueryWindow>,
     pub prefix_bits: Option<u32>, 
-    // pub max_depth: Option<u32>,       // 最大递归深度
-    // pub max_nodes: Option<usize>,     // 递归节点上限
-    // pub tail_bits_guard: Option<u32>, // 尾部剩余位的粗接收阈值
+    // pub max_depth: Option<u32>,       // Maximum recursion depth
+    // pub max_nodes: Option<usize>,     // Maximum recursion nodes
+    // pub tail_bits_guard: Option<u32>, // Tail bits coarse acceptance threshold
 }
 
 #[derive(Debug, Deserialize)]

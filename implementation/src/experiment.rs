@@ -4,7 +4,7 @@ use crate::node::Segment;
 use crate::planner::{plan_window, PlanResult};
 use crate::query::QueryExecutor;
 use crate::sfc::{build_sfc_params, encode_point, SfcParams};
-use crate::smart::SmartDirect; // ⬅ 新增：snode 模式
+use crate::smart::SmartDirect; // Added for snode mode
 use chrono::{Local, Utc};
 use csv::StringRecord;
 use std::fs::{create_dir_all, File};
@@ -15,14 +15,14 @@ use crate::vnode::VNetwork;
 use crate::placement::Placement;
 
 pub fn run_experiment(cfg: &Config) {
-    // 1) 输出目录
+    // 1) Output directory
     let run_dir = make_run_dir();
     println!("Output dir = {}", run_dir.display());
 
-    // 2) SFC 参数
+    // 2) SFC parameters
     let sfc_params = build_sfc_params(cfg);
 
-    // 3) 构建网络（placement 可选：baseline | vnode | snode）
+    // 3) Build network (placement option: baseline | vnode | snode)
     let pnodes = cfg.network.num_nodes.max(1);
     let tail_bits = cfg.experiment.stop_tail_bits as u8;
     let m = sfc_params.ring_m;
@@ -33,7 +33,7 @@ pub fn run_experiment(cfg: &Config) {
             Box::new(VNetwork::new(pnodes, v, m, tail_bits))
         }
         "snode" => {
-            // ⬅ SmartDirect：导入阶段先缓存，ingest 后 finalize()
+            // ← SmartDirect: cache during import, finalize() after ingest
             Box::new(SmartDirect::new(pnodes, m, tail_bits))
         }
         _ => {
@@ -48,7 +48,7 @@ pub fn run_experiment(cfg: &Config) {
         ingest_csv_into_network(cfg, &sfc_params, &mut *net_box);
     println!("Inserted {} records in network.", ingest_count);
 
-    // 👉 snode 模式在 ingest 之后 finalize（两阈值连续装箱 + pnode finger table 重建）
+    // → snode mode finalize after ingest (two-threshold packing + pnode finger table rebuild)
     if cfg.placement.mode.eq_ignore_ascii_case("snode") {
         let low = cfg.placement.smart.as_ref().and_then(|s| s.low_ratio).unwrap_or(0.95);
         let high = cfg.placement.smart.as_ref().and_then(|s| s.high_ratio).unwrap_or(1.10);
@@ -69,15 +69,15 @@ pub fn run_experiment(cfg: &Config) {
         writeln!(tf, "ingest_ms={}", t_ingest.elapsed().as_millis()).ok();
     }
 
-    // 5) 导出 CSV（按模式区分：vnode | snode | baseline）
+    // 5) Export CSV (distinguish by mode: vnode | snode | baseline)
     {
-        // 判定模式
+        // Determine mode
         let is_vnode = cfg.placement.mode.eq_ignore_ascii_case("vnode");
         let is_snode = cfg.placement.mode.eq_ignore_ascii_case("snode");
 
-        // 公共数据（pnode 聚合）
+        // Common data (pnode aggregation)
         let pnode_rows = net_box.node_distribution_rows();        // (idx,id,total,mn,mx)
-        // vnode 明细（仅 vnode 模式使用；在 snode 下我们不再输出 vnode 列）
+        // vnode details (used only in vnode mode; snode mode no longer emits vnode columns)
         let vnode_details = net_box.export_pnode_vnode_details(); // (pi,pid,vi,vid,rs,re,wrap,tot,mn,mx)
 
         #[inline]
@@ -87,7 +87,7 @@ pub fn run_experiment(cfg: &Config) {
 
         // ---------- 5.1) node_distribution.csv ----------
         if is_vnode {
-            // vnode 模式：vnode 级别
+            // vnode mode: vnode-level output
             let mut f = BufWriter::new(File::create(run_dir.join("node_distribution.csv"))
                 .expect("create node_distribution.csv"));
             writeln!(f, "pnode_idx,vnode_idx,vnode_id,total_count,min_key,max_key").ok();
@@ -100,7 +100,7 @@ pub fn run_experiment(cfg: &Config) {
                 ).ok();
             }
         } else {
-            // snode | baseline：pnode 级别
+            // snode | baseline: pnode-level output
             let mut f = BufWriter::new(File::create(run_dir.join("node_distribution.csv"))
                 .expect("create node_distribution.csv"));
             writeln!(f, "pnode_idx,node_id,total_count,min_key,max_key").ok();
@@ -116,7 +116,7 @@ pub fn run_experiment(cfg: &Config) {
 
         // ---------- 5.2) node_ranges.csv ----------
         if is_vnode {
-            // vnode 模式：vnode 级别
+            // vnode mode: vnode-level output
             let mut f = BufWriter::new(File::create(run_dir.join("node_ranges.csv"))
                 .expect("create node_ranges.csv"));
             writeln!(f, "pnode_idx,vnode_idx,vnode_id,resp_start,resp_end,wrapped,stored_total,stored_min,stored_max").ok();
@@ -129,7 +129,7 @@ pub fn run_experiment(cfg: &Config) {
                 ).ok();
             }
         } else {
-            // snode | baseline：pnode 级别（SmartDirect 的 export_node_ranges 已按 pnode 输出）
+            // snode | baseline: pnode-level output (SmartDirect::export_node_ranges already emits pnode rows)
             let mut f = BufWriter::new(File::create(run_dir.join("node_ranges.csv"))
                 .expect("create node_ranges.csv"));
             writeln!(f, "pnode_idx,node_id,resp_start,resp_end,wrapped,stored_total,stored_min,stored_max").ok();
@@ -148,9 +148,9 @@ pub fn run_experiment(cfg: &Config) {
             .expect("create node_dump.csv"));
 
         if is_vnode {
-            // vnode 模式：带 vnode 列
+            // vnode mode: includes vnode columns
             writeln!(ndump, "pnode_idx,vnode_idx,vnode_id,key,user,traj_id,lat,lon,datetime").ok();
-            // 为避免重复导出，同一个 pnode 的数据只取一次
+            // Avoid duplicate exports by reading each pnode only once
             let mut cache: std::collections::HashMap<usize, Vec<&crate::node::Segment>> = std::collections::HashMap::new();
             for (pi, _pid, vi, vid, rs, re, wrapped, _total, _mn, _mx) in vnode_details.iter().cloned() {
                 let segs = cache.entry(pi).or_insert_with(|| net_box.export_node_data(pi));
@@ -170,7 +170,7 @@ pub fn run_experiment(cfg: &Config) {
                 }
             }
         } else {
-            // snode | baseline：pnode 级别
+            // snode | baseline: pnode-level output
             writeln!(ndump, "pnode_idx,node_id,key,user,traj_id,lat,lon,datetime").ok();
             for (i, id, _rs, _re, _wrapped, _total, _mn, _mx) in net_box.export_node_ranges() {
                 for seg in net_box.export_node_data(i) {
@@ -202,10 +202,10 @@ pub fn run_experiment(cfg: &Config) {
     }
     write_params_snapshot(&run_dir, cfg);
 
-    // 7) 路由自检（SmartDirect 会在 finalize 后重建 pnode 指定的 finger table）
+    // 7) Routing self-check (SmartDirect rebuilds the pnode-specific finger table after finalize)
     sanity_probe(&*net_box, &sample_keys);
 
-    // 8) 执行查询
+    // 8) Run queries
     {
         let executor = QueryExecutor::new(&*net_box, run_dir.clone(), &cfg);
         for (qi, q) in cfg.experiment.queries.iter().enumerate() {
@@ -341,7 +341,7 @@ fn ingest_csv_into_network(
     let mut sample_keys: Vec<u64> = Vec::new();
     let entry_node: usize = 0;
 
-    // 对“同一原始轨迹串”计数，生成单调的 segment_id
+    // Count segments within the same raw trajectory string to generate monotonic segment_id values
     use std::collections::HashMap;
     let mut seg_counter: HashMap<String, u32> = HashMap::new();
 
@@ -419,13 +419,13 @@ fn stable_u64_from_str(s: &str) -> u64 {
 }
 
 fn parse_time(s: &str) -> u64 {
-    // 1) 纯数字秒
+    // 1) Plain numeric seconds
     if let Ok(v) = s.trim().parse::<i64>() { return v.max(0) as u64; }
     // 2) RFC3339
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return dt.with_timezone(&Utc).timestamp().max(0) as u64;
     }
-    // 3) 无时区常见格式（按 UTC 解析）
+    // 3) Common timezone-free format (parsed as UTC)
     use chrono::NaiveDateTime;
     const FMTS: [&str; 4] = [
         "%Y-%m-%d %H:%M:%S",

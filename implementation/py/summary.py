@@ -2,12 +2,12 @@
 """
 plot_summary_metrics.py
 
-功能：
-- 从每个方案目录下的三种 query 目录读取 summary.txt
-- 指标：Total precise hits、Hit pnodes、Total route hops、Avg route hops
-- 为每个指标画一张对比折线图（横轴=方案，三条线分别是三个 query）
+Summary script:
+- read summary.txt from the three query directories under each scheme directory
+- metrics: Total precise hits, Hit pnodes, Total route hops, Avg route hops
+- draw one comparison line chart per metric (x-axis = scheme, three lines = three queries)
 
-依赖：matplotlib、pandas、numpy
+Dependencies: matplotlib, pandas, numpy
 """
 
 from pathlib import Path
@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ==================== 配置 ====================
+# ==================== Configuration ====================
 BASE_DIR = Path("D:/implementation/p2psta/implementation/results")
 RUNS_ORDER = [
     "op128","snode128","p128v10","p128v100","p128v1000","p128v10000",
@@ -30,13 +30,13 @@ QUERIES = [
 ]
 
 OUT_DIR = Path("/implementation/p2psta/implementation/results/figs/summary"); OUT_DIR.mkdir(parents=True, exist_ok=True)
-FIGSIZE = (22, 12)   # 一张图容纳 4 个子图
+FIGSIZE = (22, 12)   # one figure holding four subplots
 DPI = 400
 LW = 1.2
 MS = 4
 ALPHA = 0.9
 
-# ========= 解析 summary.txt =========
+# ========= Parse summary.txt =========
 METRIC_KEYS = {
     "Total precise hits": "Number of data hits",
     "Hit pnodes": "Number of pnode hits",
@@ -56,7 +56,7 @@ def parse_summary_file(path: Path) -> dict:
         k, v = line.split(":", 1)
         k, v = k.strip(), v.strip()
         if k in METRIC_KEYS:
-            # 提取数值（整数/浮点）
+            # Extract numeric values (integer / float)
             m = re.search(r"-?\d+(?:\.\d+)?", v)
             if not m:
                 continue
@@ -77,7 +77,7 @@ def collect_long_df() -> pd.DataFrame:
             rows.append({"run": run, "query": qname, **vals})
     return pd.DataFrame(rows)
 
-# ========= 画 2x2 总图 =========
+# ========= Draw the 2x2 overview =========
 def plot_overview(df: pd.DataFrame, savepath: Path):
     metrics = [
         ("Number of data hits", "Number of data hits"),
@@ -90,7 +90,7 @@ def plot_overview(df: pd.DataFrame, savepath: Path):
     axes = axes.ravel()
     x = np.arange(len(RUNS_ORDER))
 
-    # 为做一个统一图例：收集一个 handles/labels
+    # Collect one set of handles/labels for a shared legend
     handles_labels_collected = None
 
     for ax, (col, title) in zip(axes, metrics):
@@ -105,11 +105,11 @@ def plot_overview(df: pd.DataFrame, savepath: Path):
         ax.set_xticklabels(RUNS_ORDER, rotation=45, ha="right")
         ax.grid(True, alpha=0.3)
 
-        # 收集一次图例
+        # Collect legend entries once
         if handles_labels_collected is None:
             handles_labels_collected = ax.get_legend_handles_labels()
 
-    # 顶部统一图例
+    # Shared legend at the top
     if handles_labels_collected is not None:
         handles, labels = handles_labels_collected
         fig.legend(handles, labels, loc="upper center", ncol=len(QUERIES),
@@ -117,7 +117,7 @@ def plot_overview(df: pd.DataFrame, savepath: Path):
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(savepath, dpi=DPI)
-    # 如需矢量图：fig.savefig(savepath.with_suffix(".svg"))
+    # For vector output, use: fig.savefig(savepath.with_suffix(".svg"))
     plt.close(fig)
     print(f"[Saved] {savepath}")
 

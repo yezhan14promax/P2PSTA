@@ -9,7 +9,7 @@ pub struct VNetwork {
     inner: Network,
     pnodes: usize,
     vnodes_per_node: usize,
-    owner: Vec<usize>, // vnode -> pnode（交错：v % pnodes）
+    owner: Vec<usize>, // vnode -> pnode (interleaved: v % pnodes)
 }
 
 impl VNetwork {
@@ -66,13 +66,13 @@ impl Placement for VNetwork {
     }
 
     fn node_distribution_rows(&self) -> Vec<NodeDistRow> {
-        // 聚合 vnode -> pnode
+        // Aggregate vnode statistics back to pnodes
         let vnode_rows = self.inner.node_distribution_rows(); // (vi, id, total, mn, mx)
         let mut agg: Vec<NodeDistRow> = (0..self.pnodes).map(|pi| (pi, 0u64, 0usize, None, None)).collect();
         for (vi, id, total, mn, mx) in vnode_rows {
             let pi = self.pidx(vi);
             let slot = &mut agg[pi];
-            if slot.1 == 0 { slot.1 = id; } // 代表性 id
+            if slot.1 == 0 { slot.1 = id; } // representative id
             slot.2 += total;
             slot.3 = match (slot.3, mn) { (Some(a), Some(b)) => Some(a.min(b)), (None, s) => s, (a, None) => a };
             slot.4 = match (slot.4, mx) { (Some(a), Some(b)) => Some(a.max(b)), (None, s) => s, (a, None) => a };
@@ -91,11 +91,11 @@ impl Placement for VNetwork {
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
-    // ========= 下面是你要的三个“导出”方法 =========
+    // ========= The three requested export helpers =========
 
     fn export_node_ranges(&self) -> Vec<NodeRangeRow> {
-        // 目标：一行 = 一个 pnode 的“汇总”，不再伪造连续区间
-        let total_v = self.inner.node_count(); // 你已在 network.rs 增加了这个 getter
+        // Goal: one row per pnode summary, without fabricating a continuous interval
+        let total_v = self.inner.node_count(); // getter provided by network.rs
         let mut out: Vec<NodeRangeRow> = Vec::with_capacity(self.pnodes);
 
         for p in 0..self.pnodes {
@@ -119,7 +119,7 @@ impl Placement for VNetwork {
                 v += self.pnodes;
             }
 
-            // 非连续：用 0/0 + wrapped=true 标记；“真实区间”去看 export_pnode_vnode_details()
+            // Non-contiguous: mark as 0/0 + wrapped=true; use export_pnode_vnode_details() for the real intervals
             out.push((p, rep_id, 0, 0, true, stored_total, stored_min, stored_max));
         }
         out
@@ -127,12 +127,12 @@ impl Placement for VNetwork {
 
 
     fn export_node_data<'a>(&'a self, pnode_idx: usize) -> Vec<&'a Segment> {
-        // 目标：返回该 pnode 旗下所有 vnode 的数据集合
+        // Goal: return the combined data owned by all vnodes under this pnode
         let mut out: Vec<&Segment> = Vec::new();
-        let total_v = self.inner.node_count(); // 或 self.owner.len()
+        let total_v = self.inner.node_count(); // or self.owner.len()
         let mut v = pnode_idx;
         while v < total_v {
-            // Network 的固有方法：按 vnode 导出，再合并
+            // Use the inherent Network method to export by vnode, then merge the results
             let it = Network::export_node_data(&self.inner, v);
             out.extend(it);
             v += self.pnodes;
@@ -146,10 +146,10 @@ impl Placement for VNetwork {
 
         for p in 0..self.pnodes {
             let mut v = p;
-            let p_rep = self.inner.node_id(v); // 旗下第一个 vnode 的 id 作为代表
+            let p_rep = self.inner.node_id(v); // use the first owned vnode id as the representative id
             while v < total_v {
                 let (rs, re, wrapped) = self.inner.node_responsible_interval(v);
-                let (t, mn, mx) = self.inner.node_stats_range(v); // 见“辅助方法”注
+                let (t, mn, mx) = self.inner.node_stats_range(v); // see the helper method note
                 out.push((
                     p, p_rep,
                     v, self.inner.node_id(v),

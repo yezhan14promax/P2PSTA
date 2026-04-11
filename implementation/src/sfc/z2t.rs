@@ -3,7 +3,7 @@ use super::{
     morton2_interleave_var, morton3_prefix, merge_ranges,
 };
 
-/// 将实值范围映射到量化索引闭区间 [imin, imax]，右端 ceil()-1
+/// Map a real-valued range to the quantized closed index interval [imin, imax], with the right edge using ceil()-1
 fn idx_range_f64(vmin: f64, vmax: f64, mn: f64, mx: f64, l: u32) -> (u32, u32) {
     let n = ((1u64 << l) - 1) as f64;
     let clamp = |v: f64| v.max(0.0).min(1.0);
@@ -16,21 +16,21 @@ fn idx_range_f64(vmin: f64, vmax: f64, mn: f64, mx: f64, l: u32) -> (u32, u32) {
     (imin.min(imax), imax)
 }
 
-/// 2D 节点是否完全在查询矩形内
+/// Whether a 2D node is fully inside the query rectangle
 #[inline]
 fn quad_inside(x0: u32, x1: u32, y0: u32, y1: u32, qx0: u32, qx1: u32, qy0: u32, qy1: u32) -> bool {
     x0 >= qx0 && x1 <= qx1 && y0 >= qy0 && y1 <= qy1
 }
-/// 2D 节点是否与查询矩形相离
+/// Whether a 2D node is disjoint from the query rectangle
 #[inline]
 fn quad_outside(x0: u32, x1: u32, y0: u32, y1: u32, qx0: u32, qx1: u32, qy0: u32, qy1: u32) -> bool {
     x1 < qx0 || x0 > qx1 || y1 < qy0 || y0 > qy1
 }
 
-/// 2D Z 递归覆盖：
-/// - orig = Bits3{lx,ly,lt:0}（用于计算 Morton 前缀）；
-/// - 当前节点 (xb,yb) + 剩余位 (rx,ry)；
-/// - 完全包含：输出一个 XY Morton 前缀区间（先输出 XY 局部区间，再加时间桶前缀）。
+/// Recursive 2D Z-order cover:
+/// - orig = Bits3{lx, ly, lt:0}, used to compute the Morton prefix;
+/// - current node (xb, yb) plus remaining bits (rx, ry);
+/// - if fully contained, emit one XY Morton prefix range, then prepend the time-bucket prefix.
 fn cover_z2(
     orig_xy: Bits3,
     xb: u32, yb: u32,
@@ -47,7 +47,7 @@ fn cover_z2(
     }
     if quad_inside(xb, x1, yb, y1, qx0, qx1, qy0, qy1) {
         let used = (orig_xy.lx - rx) + (orig_xy.ly - ry); // lt=0
-        let prefix = morton3_prefix(xb, yb, 0, orig_xy, used); // 退化为 2D
+        let prefix = morton3_prefix(xb, yb, 0, orig_xy, used); // degenerates to 2D here
         let total = (orig_xy.lx + orig_xy.ly) as u32;
         let shift = (total - used) as u64;
         let start = (prefix as u64) << shift;
@@ -115,11 +115,11 @@ pub fn ranges_for_window_z2t(
     t_min: u64, t_max: u64,
 ) -> Vec<(u64, u64)> {
     let Bits3 { lx, ly, .. } = p.bits;
-    // XY 量化闭区间
+    // Quantized XY closed intervals
     let (qx0, qx1) = idx_range_f64(lat_min, lat_max, p.glat.0, p.glat.1, lx);
     let (qy0, qy1) = idx_range_f64(lon_min, lon_max, p.glon.0, p.glon.1, ly);
 
-    // 时间桶范围（闭区间）
+    // Time-bucket range (closed interval)
     let num_buckets = ((p.gtime.1 - p.gtime.0) + p.time_bucket_s - 1) / p.time_bucket_s;
     let nb = num_buckets.max(1);
     let b_min = ((t_min.saturating_sub(p.gtime.0)) / p.time_bucket_s).min(nb - 1);

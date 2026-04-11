@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Geolife 严格数据清洗脚本（无外部配置）
-- 读取 ROOT 下每个用户目录的 Trajectory/*.plt
-- 统一时区到 UTC（末尾 Z）
-- 全局时间窗过滤（默认：2007-04-01 ~ 2012-08-31）
-- 轨迹内排序、同秒去重
-- 速度/距离异常过滤、近距离抖动过滤
-- 北京范围裁剪
-- 轨迹最小点数过滤
-- 产出 geolife_clean.csv 与 preprocess_summary.txt
+Strict Geolife data-cleaning script with no external configuration.
+- Read Trajectory/*.plt from each user directory under ROOT
+- Normalize timestamps to UTC (trailing Z)
+- Filter by a global time window (default: 2007-04-01 to 2012-08-31)
+- Sort points within each trajectory and deduplicate points within the same second
+- Filter speed/distance outliers and near-duplicate jitter
+- Clip to the Beijing bounding box
+- Filter trajectories by minimum point count
+- Produce geolife_clean.csv and preprocess_summary.txt
 
-用法：
+Usage:
   python preprocess.py --root "D:/GeolifeTrajectories/Data" --out "geolife_clean.csv" [--verbose]
 
-仅需 pandas。Python 3.9+（使用 zoneinfo）。
+Requires only pandas. Python 3.9+ is needed for zoneinfo.
 """
 
 from __future__ import annotations
@@ -29,46 +29,46 @@ import pandas as pd
 from zoneinfo import ZoneInfo  # Python 3.9+
 
 # =========================
-# 配置常量（可按需直接改动）
+# Configuration constants (edit directly if needed)
 # =========================
 
-# 数据根目录（包含 user 目录，每个 user 下有 Trajectory/*.plt）
+# Root data directory containing user folders, each with Trajectory/*.plt
 DEFAULT_ROOT = r"D:\implementation\p2psta\implementation\geolife\Geolife Trajectories 1.3\Data"
 
-# 输出 CSV 文件名
+# Output CSV filename
 DEFAULT_OUT_CSV = "geolife_clean.csv"
 
-# 是否额外输出 Pickle（空字符串则不输出）
-DEFAULT_OUT_PKL = ""   # 例如 "geolife_clean.pkl"
+# Whether to additionally emit a Pickle file (empty string disables it)
+DEFAULT_OUT_PKL = ""   # for example: "geolife_clean.pkl"
 
-# 原始记录的当地时区（Geolife 在北京采集，通常用 Asia/Shanghai）
+# Local timezone of the raw records (Geolife was collected in Beijing, so Asia/Shanghai is typical)
 LOCAL_TZ = "Asia/Shanghai"
 
-# 是否转换到 UTC（窗口通常用 Z/UTC，建议 True）
+# Whether to convert to UTC (query windows usually use Z/UTC, so True is recommended)
 TO_UTC = True
 
-# —— 全局时间窗（UTC，左闭右开）——
-# 与官方数据期一致：2007-04 ~ 2012-08
+# --- Global time window in UTC [inclusive, exclusive) ---
+# Matches the official dataset period: 2007-04 to 2012-08
 TIME_START_UTC = "2007-04-01T00:00:00Z"
 TIME_END_UTC_EXCL = "2012-09-01T00:00:00Z" 
 
-# 空间裁剪范围（北京大致范围，可按需缩小/扩大）
+# Spatial clipping range (rough Beijing bounding box; shrink or expand as needed)
 LAT_MIN, LAT_MAX = 39.0, 41.0
 LON_MIN, LON_MAX = 115.0, 118.0
 
-# 清洗规则
-MAX_SPEED_KMH = 200.0   # 相邻点速度超过此阈值判为异常，丢弃后点
-MIN_TIME_DIFF_S = 1     # 相邻点时间差小于该值时，触发“近距离抖动”规则
-MIN_MOVE_M = 1.0        # 相邻点距离小于该值且时间也很小 → 认为抖动，丢弃后点
-MIN_POINTS_PER_TRAJ = 5 # 轨迹最少点数
-DROP_ZERO_COORD = True  # 丢弃 (0,0) 点
+# Cleaning rules
+MAX_SPEED_KMH = 200.0   # if speed between adjacent points exceeds this threshold, drop the later point
+MIN_TIME_DIFF_S = 1     # if adjacent points are closer than this in time, trigger the near-jitter rule
+MIN_MOVE_M = 1.0        # if distance and time gap are both tiny, treat it as jitter and drop the later point
+MIN_POINTS_PER_TRAJ = 5 # minimum number of points per trajectory
+DROP_ZERO_COORD = True  # drop points at (0,0)
 
-# 日志详细程度
+# Logging verbosity
 VERBOSE = False
 
 
 # =========================
-# 工具函数
+# Helper functions
 # =========================
 
 def log(msg: str):
@@ -77,8 +77,8 @@ def log(msg: str):
 
 def safe_parse_datetime(date_str: str, time_str: str, local_tz: ZoneInfo) -> Optional[datetime]:
     """
-    Geolife PLT: 'date','time' 两列，多为当地时间。
-    返回 tz-aware datetime（若 TO_UTC 则转 UTC）。
+    Geolife PLT uses separate "date" and "time" columns, usually in local time.
+    Return a timezone-aware datetime object (converted to UTC when TO_UTC is enabled).
     """
     s = f"{(date_str or '').strip()} {(time_str or '').strip()}"
     fmts = ["%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"]
@@ -103,7 +103,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 # =========================
-# 主逻辑
+# Main logic
 # =========================
 
 def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
@@ -119,15 +119,15 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
         "files_total": 0,
         "rows_total": 0,
 
-        "rows_bad_format": 0,         # 缺列/NaN
-        "rows_bad_time": 0,           # 时间解析失败
+        "rows_bad_format": 0,         # missing columns / NaN
+        "rows_bad_time": 0,           # timestamp parse failure
         "rows_zero_coord": 0,         # (0,0)
-        "rows_out_of_bbox": 0,        # 超出范围
-        "rows_out_of_timerange": 0,   # 不在全局时间窗
+        "rows_out_of_bbox": 0,        # outside bounding box
+        "rows_out_of_timerange": 0,   # outside the global time window
 
-        "rows_same_second_merged": 0, # 同秒去重
-        "rows_speed_outlier": 0,      # 速度异常
-        "rows_too_close": 0,          # 近距离抖动
+        "rows_same_second_merged": 0, # same-second deduplication
+        "rows_speed_outlier": 0,      # speed outlier
+        "rows_too_close": 0,          # near-duplicate jitter
 
         "traj_total": 0,
         "traj_too_short": 0,
@@ -146,7 +146,7 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
             stats["files_total"] += 1
 
             try:
-                # Geolife 标准：前 6 行是 header，从第 7 行开始是数据
+                # Geolife standard: the first six lines are headers; data starts from line seven
                 df = pd.read_csv(
                     fpath, skiprows=6, header=None,
                     names=["lat", "lon", "unused", "alt_ft", "days", "date", "time"],
@@ -154,7 +154,7 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
                     na_filter=True
                 )
             except Exception:
-                # 文件坏掉就跳过
+                # Skip corrupted files
                 continue
 
             if df.empty:
@@ -162,18 +162,18 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
 
             stats["rows_total"] += len(df)
 
-            # 1) 丢弃坏行
+            # 1) Drop malformed rows
             before = len(df)
             df = df.dropna(subset=["lat", "lon", "date", "time"])
             stats["rows_bad_format"] += (before - len(df))
 
-            # 2) 丢弃 (0,0)
+            # 2) Drop (0,0)
             if DROP_ZERO_COORD:
                 before = len(df)
                 df = df[~((df["lat"] == 0.0) & (df["lon"] == 0.0))]
                 stats["rows_zero_coord"] += (before - len(df))
 
-            # 3) 解析时间（→ UTC tz-aware）
+            # 3) Parse timestamps into UTC-aware datetimes
             dt_list = []
             bad_time = 0
             for d, t in zip(df["date"].tolist(), df["time"].tolist()):
@@ -187,12 +187,12 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
             stats["rows_bad_time"] += bad_time
             df = df.dropna(subset=["datetime"])
 
-            # 4) 全局时间窗过滤（UTC，左闭右开）
+            # 4) Filter by the global UTC time window [inclusive, exclusive)
             before = len(df)
             df = df[(df["datetime"] >= t_start) & (df["datetime"] < t_end_ex)]
             stats["rows_out_of_timerange"] += (before - len(df))
 
-            # 5) 北京范围裁剪
+            # 5) Clip to the Beijing bounding box
             before = len(df)
             df = df[
                 (df["lat"] >= LAT_MIN) & (df["lat"] <= LAT_MAX) &
@@ -203,21 +203,21 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
             if df.empty:
                 continue
 
-            # 6) 时间排序
+            # 6) Sort by time
             df = df.sort_values(["datetime"]).reset_index(drop=True)
 
-            # 7) 同秒去重（保留首点）
+            # 7) Deduplicate points within the same second (keep the first one)
             df["dt_s"] = df["datetime"].dt.floor("S")
             before = len(df)
             df = df.drop_duplicates(subset=["lat","lon","dt_s"], keep="first").reset_index(drop=True)
             stats["rows_same_second_merged"] += (before - len(df))
 
-            # 8) 速度/抖动过滤（相邻点）
+            # 8) Filter speed outliers / jitter between adjacent points
             lats = df["lat"].to_numpy()
             lons = df["lon"].to_numpy()
-            times = df["dt_s"].astype("int64").to_numpy() // 10**9  # epoch 秒
+            times = df["dt_s"].astype("int64").to_numpy() // 10**9  # epoch seconds
 
-            keep = [True]  # 首点保留
+            keep = [True]  # always keep the first point
             rm_speed = 0
             rm_close = 0
             for i in range(1, len(df)):
@@ -238,13 +238,13 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
             stats["rows_speed_outlier"] += rm_speed
             stats["rows_too_close"] += rm_close
 
-            # 9) 最小点数
+            # 9) Enforce the minimum point count
             if len(df) < MIN_POINTS_PER_TRAJ:
                 stats["traj_total"] += 1
                 stats["traj_too_short"] += 1
                 continue
 
-            # 10) 产出列
+            # 10) Emit output columns
             traj_id = f"{user}/{Path(fname).stem}"
             out = df[["lat","lon","datetime"]].copy()
             out["user"] = user
@@ -259,25 +259,25 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
 
     data = pd.concat(all_rows, ignore_index=True)
 
-    # 统一为 ISO8601 Z（UTC）
+    # Normalize to ISO8601 Z (UTC)
     data["datetime"] = pd.to_datetime(data["datetime"], utc=True).dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 输出边界
+    # Output bounds
     lat_min, lat_max = float(data["lat"].min()), float(data["lat"].max())
     lon_min, lon_max = float(data["lon"].min()), float(data["lon"].max())
     ts_min = pd.to_datetime(data["datetime"]).min()
     ts_max = pd.to_datetime(data["datetime"]).max()
 
-    # 写 CSV
+    # Write CSV
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     data.to_csv(out_csv, index=False, encoding="utf-8")
 
-    # 可选写 PKL
+    # Optionally write PKL
     if out_pkl:
         out_pkl.parent.mkdir(parents=True, exist_ok=True)
         data.to_pickle(out_pkl)
 
-    # 写 summary
+    # Write summary
     summary_path = out_csv.with_name("preprocess_summary.txt")
     with summary_path.open("w", encoding="utf-8") as f:
         def w(s: str): f.write(s + "\n")
@@ -306,7 +306,7 @@ def preprocess(root: Path, out_csv: Path, out_pkl: Optional[Path]) -> None:
         w(f"ts_min(out UTC)     : {ts_min}")
         w(f"ts_max(out UTC)     : {ts_max}")
         w("")
-        w(f"global_time_window  : [{TIME_START_UTC}, {TIME_END_UTC_EXCL})  # UTC 左闭右开")
+        w(f"global_time_window  : [{TIME_START_UTC}, {TIME_END_UTC_EXCL})  # UTC inclusive, exclusive")
 
     print(f"Saved:\n  CSV  -> {out_csv}\n  SUMM -> {summary_path}\nRows kept: {len(data)}")
     if out_pkl:

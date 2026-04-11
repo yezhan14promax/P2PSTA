@@ -20,7 +20,7 @@ pub fn ranges_for_window_z3(
     lon_min:f64, lon_max:f64,
     t_min:u64,   t_max:u64,
 )->Vec<(u64,u64)>{
-    // 1) clamp + 排序
+    // 1) Clamp + sort
     let (mut la0, mut la1) = if lat_min <= lat_max { (lat_min, lat_max) } else { (lat_max, lat_min) };
     let (mut lo0, mut lo1) = if lon_min <= lon_max { (lon_min, lon_max) } else { (lon_max, lon_min) };
     let (mut ts0, mut ts1) = if t_min   <= t_max   { (t_min,   t_max)   } else { (t_max,   t_min)   };
@@ -28,7 +28,7 @@ pub fn ranges_for_window_z3(
     lo0 = lo0.clamp(p.glon.0,  p.glon.1);  lo1 = lo1.clamp(p.glon.0,  p.glon.1);
     ts0 = ts0.clamp(p.gtime.0, p.gtime.1); ts1 = ts1.clamp(p.gtime.0, p.gtime.1);
 
-    // 2) 连续→离散（严格闭区间，避免右端掉格）
+    // 2) Continuous -> discrete (strict closed interval to avoid dropping the right edge)
     let (x0, x1) = q_range_f64_closed(la0, la1, p.glat.0,  p.glat.1,  p.bits.lx);
     let (y0, y1) = q_range_f64_closed(lo0, lo1, p.glon.0,  p.glon.1,  p.bits.ly);
     let (z0, z1) = q_range_u64_closed(ts0, ts1, p.gtime.0, p.gtime.1, p.bits.lt);
@@ -39,7 +39,7 @@ pub fn ranges_for_window_z3(
 
     let mut out: Vec<(u64,u64)> = Vec::with_capacity(4096);
 
-    // 3) 递归 + 上限 + 粗接收（确保不漏）
+    // 3) Recursion + limits + coarse acceptance (to guarantee no misses)
     let mut visited: usize = 0;
     cover_by_bitplanes_capped(
         bits, total,
@@ -58,17 +58,17 @@ pub fn ranges_for_window_z3(
     merge_ranges(out)
 }
 
-/// 统计“到该 level 还剩多少位没用”
+/// Count how many bits remain unused at this level
 #[inline]
 fn used_bits_at_level(bits: Bits3, level: u32) -> u32 {
-    // 与之前 count_used_bits 含义一致：已用高位 = (lx - level_clamped) + ...
+    // Same meaning as the earlier count_used_bits: used high bits = (lx - level_clamped) + ...
     let lx_used = bits.lx.saturating_sub(level.min(bits.lx));
     let ly_used = bits.ly.saturating_sub(level.min(bits.ly));
     let lt_used = bits.lt.saturating_sub(level.min(bits.lt));
     lx_used + ly_used + lt_used
 }
 
-/// 位层递归（携带三轴 base），并加入：最大深度 / 最大节点数 / 尾部剩余位粗接收
+/// Bit-level recursion carrying the three-axis base, with max depth / max nodes / coarse acceptance on the tail bits
 fn cover_by_bitplanes_capped(
     bits: Bits3, total:u32,
     x0:u32, x1:u32, y0:u32, y1:u32, z0:u32, z1:u32,
@@ -82,7 +82,7 @@ fn cover_by_bitplanes_capped(
     tail_bits_guard:u32,
     out:&mut Vec<(u64,u64)>
 ){
-    // 访问计数 & 节点上限 → 粗接收兜底
+    // Visit counter and node cap -> coarse-accept fallback
     *visited += 1;
     if *visited >= max_nodes {
         let used = used_bits_at_level(bits, level);
@@ -93,7 +93,7 @@ fn cover_by_bitplanes_capped(
         return;
     }
 
-    // 深度上限 or 尾部剩余位过小 → 粗接收兜底（不漏真阳性）
+    // Max depth reached or too few tail bits left -> coarse-accept fallback without losing true positives
     let used = used_bits_at_level(bits, level);
     let rem  = total - used;
     if depth >= max_depth || rem <= tail_bits_guard {
@@ -104,22 +104,22 @@ fn cover_by_bitplanes_capped(
     }
 
     if level == 0 {
-        // 叶子：精确一个 key
+        // Leaf node: exactly one key
         out.push((prefix, prefix));
         return;
     }
 
-    // 本层三轴是否有位
+    // Whether each axis still has bits at this level
     let bx = bits.lx >= level;
     let by = bits.ly >= level;
     let bz = bits.lt >= level;
 
-    // 本层每轴块宽（按格）
+    // Block width on each axis at this level (in cells)
     let span_x = if bx { 1u64 << (level - 1) } else { 0 };
     let span_y = if by { 1u64 << (level - 1) } else { 0 };
     let span_z = if bz { 1u64 << (level - 1) } else { 0 };
 
-    // 下一层时已用位（inside 成段时要用 rem_next 扩展）
+    // Used bits at the next level (inside segments use rem_next for expansion)
     let used_next = used_bits_at_level(bits, level - 1);
     let rem_next  = total - used_next;
 
@@ -129,12 +129,12 @@ fn cover_by_bitplanes_capped(
         let ybit = if by { (child >> 1) & 1 } else { 0 };
         let zbit = if bz { (child >> 0) & 1 } else { 0 };
 
-        // base 递推
+        // Propagate the base to the child node
         let cbx = if bx { base_x + (xbit as u64) * span_x } else { base_x };
         let cby = if by { base_y + (ybit as u64) * span_y } else { base_y };
         let cbz = if bz { base_z + (zbit as u64) * span_z } else { base_z };
 
-        // 子块闭区间
+        // Closed interval of the child block
         let nx0 = cbx;
         let nx1 = if bx { cbx + span_x - 1 } else { cbx + ((1u64 << bits.lx) - 1) };
         let ny0 = cby;
@@ -147,7 +147,7 @@ fn cover_by_bitplanes_capped(
                    || nz1 < z0 as u64 || nz0 > z1 as u64);
 
         if inter {
-            // 追加本层位
+            // Append the bits of this level
             let mut pref = prefix;
             if bx { pref = (pref << 1) | (xbit as u64); }
             if by { pref = (pref << 1) | (ybit as u64); }
@@ -158,7 +158,7 @@ fn cover_by_bitplanes_capped(
                       && (z0 as u64) <= nz0 && nz1 <= (z1 as u64);
 
             if inside {
-                // 整段前缀收下
+                // Accept the whole prefix range
                 let start = pref << rem_next;
                 let end   = start | ((1u64 << rem_next).saturating_sub(1));
                 out.push((start, end));
@@ -183,7 +183,7 @@ fn cover_by_bitplanes_capped(
     }
 }
 
-// ===== 量化（严格闭区间，避免右端掉格） =====
+// ===== Quantization (strict closed interval to avoid dropping the right edge) =====
 
 #[inline]
 fn q_range_f64_closed(v0:f64, v1:f64, mn:f64, mx:f64, L:u32)->(u32,u32){

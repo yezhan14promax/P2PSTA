@@ -22,4 +22,4 @@ lon_range(out)      : [115.000173, 117.999978]
 ts_min(out UTC)     : 2007-04-12 01:31:32+00:00
 ts_max(out UTC)     : 2012-07-27 00:31:20+00:00
 
-global_time_window  : [2007-04-01T00:00:00Z, 2012-09-01T00:00:00Z)  # UTC 左闭右开
+global_time_window  : [2007-04-01T00:00:00Z, 2012-09-01T00:00:00Z)  # UTC inclusive, exclusive

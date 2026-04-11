@@ -1,0 +1,52 @@
+run_name,scheme,P,mode,vnodes_per_node,density_label,n_queries,mean_node_cover,std_node_cover,mean_hops,std_hops,hops_source
+op128,Order-preserving,128,baseline,,High-density window,1,2.0,0.0,4.5,0.0,Avg route hops
+snode128,SmartNode,128,snode,,High-density window,1,3.0,0.0,4.0,0.0,Avg route hops
+p128v10,VNode v=10,128,vnode,10.0,High-density window,1,2.0,0.0,5.5,0.0,Avg route hops
+p128v100,VNode v=100,128,vnode,100.0,High-density window,1,4.0,0.0,8.0,0.0,Avg route hops
+p128v1000,VNode v=1000,128,vnode,1000.0,High-density window,1,9.0,0.0,10.778,0.0,Avg route hops
+p128v10000,VNode v=10000,128,vnode,10000.0,High-density window,1,15.0,0.0,11.733,0.0,Avg route hops
+op128,Order-preserving,128,baseline,,Low-density window,1,2.0,0.0,3.5,0.0,Avg route hops
+snode128,SmartNode,128,snode,,Low-density window,1,4.0,0.0,3.5,0.0,Avg route hops
+p128v10,VNode v=10,128,vnode,10.0,Low-density window,1,4.0,0.0,4.75,0.0,Avg route hops
+p128v100,VNode v=100,128,vnode,100.0,Low-density window,1,5.0,0.0,7.2,0.0,Avg route hops
+p128v1000,VNode v=1000,128,vnode,1000.0,Low-density window,1,13.0,0.0,8.385,0.0,Avg route hops
+p128v10000,VNode v=10000,128,vnode,10000.0,Low-density window,1,41.0,0.0,10.634,0.0,Avg route hops
+op128,Order-preserving,128,baseline,,Medium-density window,1,2.0,0.0,4.5,0.0,Avg route hops
+snode128,SmartNode,128,snode,,Medium-density window,1,3.0,0.0,3.0,0.0,Avg route hops
+p128v10,VNode v=10,128,vnode,10.0,Medium-density window,1,2.0,0.0,5.5,0.0,Avg route hops
+p128v100,VNode v=100,128,vnode,100.0,Medium-density window,1,2.0,0.0,8.5,0.0,Avg route hops
+p128v1000,VNode v=1000,128,vnode,1000.0,Medium-density window,1,8.0,0.0,10.25,0.0,Avg route hops
+p128v10000,VNode v=10000,128,vnode,10000.0,Medium-density window,1,17.0,0.0,12.647,0.0,Avg route hops
+op1024,Order-preserving,1024,baseline,,High-density window,1,2.0,0.0,7.0,0.0,Avg route hops
+snode1024,SmartNode,1024,snode,,High-density window,1,9.0,0.0,6.778,0.0,Avg route hops
+p1024v10,VNode v=10,1024,vnode,10.0,High-density window,1,3.0,0.0,8.333,0.0,Avg route hops
+p1024v100,VNode v=100,1024,vnode,100.0,High-density window,1,9.0,0.0,10.333,0.0,Avg route hops
+p1024v1000,VNode v=1000,1024,vnode,1000.0,High-density window,1,13.0,0.0,12.231,0.0,Avg route hops
+p1024v10000,VNode v=10000,1024,vnode,10000.0,High-density window,1,37.0,0.0,14.054,0.0,Avg route hops
+op1024,Order-preserving,1024,baseline,,Low-density window,1,4.0,0.0,5.5,0.0,Avg route hops
+snode1024,SmartNode,1024,snode,,Low-density window,1,6.0,0.0,6.833,0.0,Avg route hops
+p1024v10,VNode v=10,1024,vnode,10.0,Low-density window,1,6.0,0.0,6.5,0.0,Avg route hops
+p1024v100,VNode v=100,1024,vnode,100.0,Low-density window,1,10.0,0.0,8.1,0.0,Avg route hops
+p1024v1000,VNode v=1000,1024,vnode,1000.0,Low-density window,1,43.0,0.0,10.349,0.0,Avg route hops
+p1024v10000,VNode v=10000,1024,vnode,10000.0,Low-density window,1,205.0,0.0,11.98,0.0,Avg route hops
+op1024,Order-preserving,1024,baseline,,Medium-density window,1,2.0,0.0,7.0,0.0,Avg route hops
+snode1024,SmartNode,1024,snode,,Medium-density window,1,8.0,0.0,6.875,0.0,Avg route hops
+p1024v10,VNode v=10,1024,vnode,10.0,Medium-density window,1,2.0,0.0,8.5,0.0,Avg route hops
+p1024v100,VNode v=100,1024,vnode,100.0,Medium-density window,1,7.0,0.0,9.714,0.0,Avg route hops
+p1024v1000,VNode v=1000,1024,vnode,1000.0,Medium-density window,1,19.0,0.0,12.368,0.0,Avg route hops
+p1024v10000,VNode v=10000,1024,vnode,10000.0,Medium-density window,1,61.0,0.0,14.656,0.0,Avg route hops
+op8192,Order-preserving,8192,baseline,,High-density window,1,2.0,0.0,8.5,0.0,Avg route hops
+snode8192,SmartNode,8192,snode,,High-density window,1,14.0,0.0,8.214,0.0,Avg route hops
+p8192v10,VNode v=10,8192,vnode,10.0,High-density window,1,9.0,0.0,10.444,0.0,Avg route hops
+p8192v100,VNode v=100,8192,vnode,100.0,High-density window,1,15.0,0.0,11.467,0.0,Avg route hops
+p8192v1000,VNode v=1000,8192,vnode,1000.0,High-density window,1,33.0,0.0,13.788,0.0,Avg route hops
+op8192,Order-preserving,8192,baseline,,Low-density window,1,4.0,0.0,6.5,0.0,Avg route hops
+snode8192,SmartNode,8192,snode,,Low-density window,1,11.0,0.0,6.364,0.0,Avg route hops
+p8192v10,VNode v=10,8192,vnode,10.0,Low-density window,1,10.0,0.0,7.4,0.0,Avg route hops
+p8192v100,VNode v=100,8192,vnode,100.0,Low-density window,1,37.0,0.0,10.027,0.0,Avg route hops
+p8192v1000,VNode v=1000,8192,vnode,1000.0,Low-density window,1,174.0,0.0,12.201,0.0,Avg route hops
+op8192,Order-preserving,8192,baseline,,Medium-density window,1,2.0,0.0,8.5,0.0,Avg route hops
+snode8192,SmartNode,8192,snode,,Medium-density window,1,21.0,0.0,8.095,0.0,Avg route hops
+p8192v10,VNode v=10,8192,vnode,10.0,Medium-density window,1,6.0,0.0,9.833,0.0,Avg route hops
+p8192v100,VNode v=100,8192,vnode,100.0,Medium-density window,1,18.0,0.0,12.056,0.0,Avg route hops
+p8192v1000,VNode v=1000,8192,vnode,1000.0,Medium-density window,1,53.0,0.0,14.434,0.0,Avg route hops

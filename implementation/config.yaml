@@ -1,5 +1,5 @@
 dataset:
-  # 全域范围（供 sfc.rs 使用）。请按你的数据真实范围填写
+  # Dataset-wide range used by sfc.rs. Fill in the true range of your data.
   lat_range: [39.0, 41.0]
   lon_range: [115.0, 118.0]
   time_range: [1176268800, 1343433600]  # 2007-04-11 ~ 2012-07-28 
@@ -11,11 +11,11 @@ sfc:
   max_nodes: 50000
   tail_bits_guard: null
   #time_bucket_s: 604800 # day：86400 , week：604800 , month：2592000
-  max_ranges: null # null 表示不限制
+  max_ranges: null # null means unlimited
 
 data:
   csv_path: "geolife_clean.csv"
-  max_ingest: null # geolife_clean.csv 有 19632236 条记录,null 表示全部 ingest
+  max_ingest: null # geolife_clean.csv has 19,632,236 records; null ingests all of them
 
 output:
   result_dir: "results"
@@ -24,7 +24,7 @@ network:
   num_nodes: 8192
 
 placement:
-  mode: "snode"      # 可切换 "vnode" | "snode"| "baseline"
+  mode: "snode"      # Switch between "vnode" | "snode" | "baseline"
   vnodes_per_node: 10
   online_counting: true
   guard_last_bucket: true
@@ -33,7 +33,7 @@ placement:
     high_ratio: 1.05
 
 experiment:
-  stop_tail_bits: 6  # 表示最小区块边长
+  stop_tail_bits: 6  # Minimum block edge length
   print_first: 15
   debug: false
   prefix_bits: null  

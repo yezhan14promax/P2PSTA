@@ -23,7 +23,6 @@ p2psta/
 │  ├─ py/                   preprocessing & plotting scripts
 │  ├─ results/              outputs (generated)
 │  └─ geolife_clean.csv     cleaned data (generated)
-├─ docs/                    notes / reading
 └─ chord/                   early Chord prototypes (Go/Rust)
 ```
 
@@ -155,7 +154,6 @@ p2psta/
 │  ├─ py/                   prétraitement & scripts de plots
 │  ├─ results/              sorties (générées)
 │  └─ geolife_clean.csv     données nettoyées (générées)
-├─ docs/                    notes / lectures
 └─ chord/                   prototypes Chord (Go/Rust)
 ```
 
@@ -287,7 +285,6 @@ p2psta/
 │  ├─ py/                   数据预处理与可视化脚本
 │  ├─ results/              运行输出（自动生成）
 │  └─ geolife_clean.csv     预处理后的数据（可生成）
-├─ docs/                    研读/笔记文档
 └─ chord/                   早期 Chord 原型（Go/Rust）
 ```
 

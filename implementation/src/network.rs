@@ -1,17 +1,17 @@
 use crate::node::{Node, Segment};
 
-/// Chord 风格的 DHT 网络
+/// Chord-style DHT network
 #[derive(Debug)]
 pub struct Network {
     pub nodes: Vec<Node>,
-    pub m: usize,                 // 环位宽
-    pub node_ids: Vec<u64>,       // 升序排列的节点 ID（环上位置）
-    pub fingers: Vec<Vec<usize>>, // fingers[i][k] = 节点 i 在 2^k 跳后的后继节点下标
+    pub m: usize,                 // Ring bit width
+    pub node_ids: Vec<u64>,       // Sorted node IDs (positions on ring)
+    pub fingers: Vec<Vec<usize>>, // fingers[i][k] = successor index of node i after 2^k hops
     pub total_inserts: usize,
 }
 
 impl Network {
-    /// 构建一个等距分布在环上的网络
+    /// Build a network with evenly distributed nodes on ring
     pub fn new(num_nodes: usize, m: usize, tail_bits: u8) -> Self {
         let n = num_nodes.max(1);
         let ring: u128 = if m >= 64 { u128::MAX } else { 1u128 << m };
@@ -36,14 +36,14 @@ impl Network {
         net
     }
 
-    /// 重新构建 finger table
+    /// Rebuild finger table
     pub fn rebuild_fingers(&mut self) {
         let n = self.nodes.len().max(1);
         self.fingers = vec![Vec::new(); n];
 
         for i in 0..n {
             let mut tbl = Vec::new();
-            // 防止 m>63 导致移位 UB
+            // Prevent shift UB when m>63
             let max_k = self.m.min(63);
             for k in 0..max_k {
                 let target = self.nodes[i].node_id.wrapping_add(1u64 << k);
@@ -54,7 +54,7 @@ impl Network {
         }
     }
 
-    /// 在 node_ids 中二分，找 key 的后继下标
+    /// Binary search in node_ids to find successor index of key
     #[inline]
     pub fn successor_index(&self, key: u64) -> usize {
         match self.node_ids.binary_search(&key) {
@@ -67,7 +67,7 @@ impl Network {
 
     #[inline]
     fn in_interval_open_closed(&self, x: u64, a: u64, b: u64) -> bool {
-        // 环上的 (a, b]
+        // On ring, interval (a, b]
         if a < b {
             x > a && x <= b
         } else if a > b {
@@ -89,11 +89,11 @@ impl Network {
         idx
     }
 
-    /// 从入口节点出发，找到 key 的后继（返回：(后继下标, 跳数)）
+    /// Find successor of key starting from entry node, return (successor_index, hop_count)
     pub fn find_successor_from(&self, mut idx: usize, key: u64) -> (usize, usize) {
         let mut hops = 0usize;
 
-        // 先看自己与后继能否直接覆盖
+        // Check if self and successor can directly cover key
         let succ0 = self.fingers[idx][0];
         let my0 = self.nodes[idx].node_id;
         if self.in_interval_open_closed(key, my0, self.nodes[succ0].node_id) {
@@ -115,7 +115,7 @@ impl Network {
         (self.fingers[idx][0], hops.max(1))
     }
 
-    /// 插入：从 entry_node 出发找到 key 的负责节点并写入；返回路由跳数
+    /// Insert by routing from entry_node to the node responsible for the key; returns hop count
     pub fn insert(&mut self, entry_node: usize, seg: Segment) -> usize {
         let (idx, hops) = self.find_successor_from(entry_node % self.nodes.len().max(1), seg.sfc_key);
         self.nodes[idx].insert(seg);
@@ -123,7 +123,7 @@ impl Network {
         hops
     }
 
-    /// 计算某个节点在环上的**负责区间**：(prev(node).id + 1 ..= node.id)，返回 (start, end, wrapped)
+    /// Compute a node's responsible interval on the ring: (prev(node).id + 1 ..= node.id), returning (start, end, wrapped)
     fn node_interval(&self, idx: usize) -> (u64, u64, bool) {
         let n = self.nodes.len();
         if n == 0 { return (0, 0, false); }
@@ -136,23 +136,23 @@ impl Network {
         (start, end, wrapped)
     }
 
-    /// 公开的负责区间（便于统计/校验）
+    /// Public accessor for the responsible interval, used by statistics and validation
     pub fn node_responsible_interval(&self, idx: usize) -> (u64, u64, bool) {
         self.node_interval(idx)
     }
 
-    /// 简化：只取 (start, end)
+    /// Convenience helper returning only (start, end)
     pub fn node_key_range(&self, idx: usize) -> (u64, u64) {
         let (s, e, _) = self.node_interval(idx);
         (s, e)
     }
 
-    /// 返回某节点的 ID（环位置）
+    /// Return the node ID (its ring position) for a given node
     pub fn node_id_of(&self, idx: usize) -> u64 {
         self.nodes[idx].node_id
     }
 
-    /// 基本区间查询（不返回节点信息）：返回 (命中 segment 列表, 跳数)
+    /// Basic range query without node context; returns (matched segments, hops)
     pub fn query_range(&self, entry_node: usize, key_range: (u64, u64)) -> (Vec<&Segment>, usize) {
         let (s, e) = key_range;
         let n = self.nodes.len();
@@ -177,7 +177,7 @@ impl Network {
                     hits.extend(local);
                 }
             } else {
-                // wrap 情况拆两段
+                // Split wrapping queries into two segments
                 if e >= start {
                     let a_s = s.max(start);
                     let a_e = e;
@@ -197,7 +197,7 @@ impl Network {
             }
 
             touched += 1;
-            if touched > n + 1 { break; } // 保险
+            if touched > n + 1 { break; } // safety guard
             let succ = self.fingers[idx][0];
             idx = succ;
             hops += 1;
@@ -210,7 +210,7 @@ impl Network {
         (hits, hops.max(1))
     }
 
-    /// 区间查询（返回节点上下文）：( (pnode_idx, &Segment) 列表, 跳数, 命中节点集合 )
+    /// Range query with node context: returns ((pnode_idx, &Segment) list, hops, touched node set)
     pub fn query_range_with_nodes(
         &self,
         entry_node: usize,
@@ -225,7 +225,7 @@ impl Network {
             return (hits, 1, vec![0]);
         }
 
-        // hops 只取 finger 路由步数
+        // Count only finger-routing steps as hops
         let (mut idx, route_hops) = self.find_successor_from(entry_node % n, s);
         let mut hits: Vec<(usize, &Segment)> = Vec::new();
         let mut touched_nodes: Vec<usize> = Vec::new();
@@ -237,9 +237,9 @@ impl Network {
         loop {
             let (start, end, wrapped_node) = self.node_interval(idx);
 
-            // 与查询区间求交并查本地
+            // Intersect with the query interval and scan local data
             if !query_wrapped {
-                // 查询不 wrap：与当前节点（可能 wrap 或不 wrap）求交
+                // Non-wrapping query: intersect with the current node, which may itself wrap or not
                 if !wrapped_node {
                     let sub_s = s.max(start);
                     let sub_e = e.min(end);
@@ -247,7 +247,7 @@ impl Network {
                         let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
                         for seg in local { hits.push((idx, seg)); }
                     }
-                    // 关键：一旦该节点的 end 覆盖到 e，则早停
+                    // Key early-stop condition: once this node's end covers e, stop
                     if end >= e {
                         if touched_nodes.last().copied() != Some(idx) {
                             touched_nodes.push(idx);
@@ -255,7 +255,7 @@ impl Network {
                         break;
                     }
                 } else {
-                    // 节点自身 wrap：分两段与 [s,e] 求交
+                    // If the node itself wraps, intersect [s, e] with its two segments
                     if e >= start {
                         let sub_s = s.max(start);
                         let sub_e = e;
@@ -272,11 +272,11 @@ impl Network {
                             for seg in local { hits.push((idx, seg)); }
                         }
                     }
-                    // 节点 wrap 时不一定已经覆盖到 e，继续推进到下一个非 wrap 节点，届时检查 end>=e 再停
+                    // A wrapping node may still not cover e; advance to the next non-wrapping node and stop only when end >= e
                 }
             } else {
-                // 查询 wrap：覆盖 [s..MAX] ∪ [0..e]
-                // 第一段：[s..MAX]
+                // Wrapping query: cover [s..MAX] union [0..e]
+                // First segment: [s..MAX]
                 if !crossed_zero {
                     if !wrapped_node {
                         let sub_s = s.max(start);
@@ -285,10 +285,10 @@ impl Network {
                             let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
                             for seg in local { hits.push((idx, seg)); }
                         }
-                        // 如果当前节点 end == u64::MAX，下一跳必跨零
+                        // If the current node ends at u64::MAX, the next hop must cross zero
                         if end == u64::MAX { crossed_zero = true; }
                     } else {
-                        // 节点 wrap：也会覆盖到 MAX，下一跳跨零
+                        // A wrapping node also covers MAX, so the next hop crosses zero
                         let sub_s = s.max(start);
                         let sub_e = u64::MAX;
                         if sub_s <= sub_e {
@@ -298,7 +298,7 @@ impl Network {
                         crossed_zero = true;
                     }
                 } else {
-                    // 第二段：[0..e]
+                    // Second segment: [0..e]
                     if !wrapped_node {
                         let sub_s = 0u64.max(start);
                         let sub_e = e.min(end);
@@ -306,7 +306,7 @@ impl Network {
                             let (local, _) = self.nodes[idx].query_range((sub_s, sub_e));
                             for seg in local { hits.push((idx, seg)); }
                         }
-                        // 一旦 end >= e，第二段覆盖完成，早停
+                        // Once end >= e, the second segment is fully covered, so stop early
                         if end >= e {
                             if touched_nodes.last().copied() != Some(idx) {
                                 touched_nodes.push(idx);
@@ -314,7 +314,7 @@ impl Network {
                             break;
                         }
                     } else {
-                        // 节点 wrap：把 [0..end] 这段与 [0..e] 求交
+                        // Wrapping node: intersect its [0..end] segment with [0..e]
                         if e <= end {
                             let (local, _) = self.nodes[idx].query_range((0, e));
                             for seg in local { hits.push((idx, seg)); }
@@ -334,11 +334,11 @@ impl Network {
                 touched_nodes.push(idx);
             }
 
-            // 推进到后继（线性推进，仅用于覆盖；不再计入 hops）
+            // Advance to the successor linearly for coverage only; no extra hops are counted
             visits += 1;
-            if visits > n + 1 { break; } // 保险
+            if visits > n + 1 { break; } // safety guard
             let succ = self.fingers[idx][0];
-            if succ == idx { break; } // 退化
+            if succ == idx { break; } // degenerate case
             idx = succ;
         }
 
@@ -347,7 +347,7 @@ impl Network {
 
 
 
-    /// 导出节点负责区间 + 存储数据范围（用于核对）
+    /// Export node responsible intervals plus stored-data ranges for verification
     /// (pnode_idx, node_id, resp_start, resp_end, wrapped, stored_total, stored_min, stored_max)
     pub fn export_node_ranges(&self) -> Vec<(usize, u64, u64, u64, bool, usize, Option<u64>, Option<u64>)> {
         let mut rows = Vec::new();
@@ -359,12 +359,12 @@ impl Network {
         rows
     }
 
-    /// 导出某节点内**真实存储**的 Segment（迭代器）
+    /// Export the segments actually stored on a node (iterator)
     pub fn export_node_data(&self, idx: usize) -> impl Iterator<Item = &Segment> {
         self.nodes[idx].iter_segments()
     }
 
-    /// 节点分布（原有 node_distribution 的结构化版本）
+    /// Structured node distribution data (replacement for the old node_distribution output)
     pub fn node_distribution_rows(&self) -> Vec<(usize, u64, usize, Option<u64>, Option<u64>)> {
         let mut out = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {
@@ -378,7 +378,7 @@ impl Network {
     #[inline] pub fn node_stats_range(&self, idx: usize) -> (usize, Option<u64>, Option<u64>) { self.nodes[idx].stats_range() }
     #[inline] pub fn node_id(&self, idx: usize) -> u64 { self.node_id_of(idx) }
 
-    /// 打印节点分布（调试用）
+    /// Print node distribution for debugging
     pub fn print_node_distribution(&self) {
         println!("--- Node data distribution ---");
         for (i, node) in self.nodes.iter().enumerate() {
